@@ -47,7 +47,7 @@ jobs:
       uses: docker/build-push-action@v4
       with:
         context: .
-        dockerfile: Dockerfile.main
+
         push: true
         tags: ${{ secrets.DOCKER_HUB_USERNAME }}/gpt-oss-mcp-server:latest
         build-args: |
