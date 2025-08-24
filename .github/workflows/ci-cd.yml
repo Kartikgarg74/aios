@@ -47,6 +47,7 @@ jobs:
       uses: docker/build-push-action@v4
       with:
         context: .
+        dockerfile: Dockerfile.main
         push: true
         tags: ${{ secrets.DOCKER_HUB_USERNAME }}/gpt-oss-mcp-server:latest
         build-args: |
@@ -96,5 +97,8 @@ jobs:
         ssh-keyscan $REMOTE_HOST >> ~/.ssh/known_hosts
         
         # Copy compose file and deploy
+        ssh $REMOTE_USER@$REMOTE_HOST "mkdir -p ~/gpt-oss/kubernetes"
         scp docker-compose.yml $REMOTE_USER@$REMOTE_HOST:~/gpt-oss/
-        ssh $REMOTE_USER@$REMOTE_HOST "cd ~/gpt-oss && docker-compose pull && docker-compose up -d"
+        scp kubernetes/*.yaml $REMOTE_USER@$REMOTE_HOST:~/gpt-oss/kubernetes/
+        ssh $REMOTE_USER@$REMOTE_HOST "cd ~/gpt-oss && docker-compose down --volumes --remove-orphans && docker-compose pull && docker-compose up -d"
+        ssh $REMOTE_USER@$REMOTE_HOST "cd ~/gpt-oss/kubernetes && for f in *.yaml; do kubectl apply -f \"$f\"; done"

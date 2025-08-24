@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marketplace-server
+  labels:
+    app: marketplace-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: marketplace-server
+  template:
+    metadata:
+      labels:
+        app: marketplace-server
+    spec:
+      containers:
+      - name: marketplace-server
+        image: ${{ secrets.DOCKER_HUB_USERNAME }}/gpt-oss-marketplace:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: DOCKER_HUB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: docker-hub-credentials
+              key: username
+        - name: DOCKER_HUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: docker-hub-credentials
+              key: token
+--- 
+apiVersion: v1
+kind: Service
+metadata:
+  name: marketplace-server-service
+spec:
+  selector:
+    app: marketplace-server
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: LoadBalancer
