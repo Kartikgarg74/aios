@@ -62,6 +62,16 @@ jobs:
         build-args: |
           BUILDKIT_INLINE_CACHE=1
 
+    - name: Build and push marketplace image
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        dockerfile: Dockerfile.marketplace
+        push: true
+        tags: ${{ secrets.DOCKER_HUB_USERNAME }}/gpt-oss-marketplace:latest
+        build-args: |
+          BUILDKIT_INLINE_CACHE=1
+
   deploy:
     needs: docker-build
     runs-on: ubuntu-latest
