@@ -52,7 +52,7 @@ jobs:
       with:
         context: .
 
-        dockerfile: Dockerfile
+        dockerfile: ./Dockerfile
         push: true
         tags: ${{ secrets.DOCKER_HUB_USERNAME }}/gpt-oss-mcp-server:latest
         build-args: |
