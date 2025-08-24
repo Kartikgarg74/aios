@@ -90,6 +90,8 @@ jobs:
         REMOTE_HOST: ${{ secrets.REMOTE_HOST }}
         REMOTE_USER: ${{ secrets.REMOTE_USER }}
       run: |
+        echo "Debugging SSH_KEY: ${SSH_KEY}"
+        echo "Debugging REMOTE_HOST: ${REMOTE_HOST}"
         mkdir -p ~/.ssh
         echo "$SSH_KEY" > ~/.ssh/id_rsa
         chmod 600 ~/.ssh/id_rsa
