@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: browser-server-deployment
+  labels:
+    app: browser-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: browser-server
+  template:
+    metadata:
+      labels:
+        app: browser-server
+    spec:
+      containers:
+      - name: browser-server
+        image: browser-server:latest # Assuming you'll build and push this image
+        ports:
+        - containerPort: 8001
+        env:
+        - name: PORT
+          value: "8001"
+        - name: REDIS_URL
+          value: "redis://redis-service:6379"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: browser-server-service
+  labels:
+    app: browser-server
+spec:
+  selector:
+    app: browser-server
+  ports:
+    - protocol: TCP
+      port: 8001
+      targetPort: 8001
+  type: ClusterIP

@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ide-server-deployment
+  labels:
+    app: ide-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ide-server
+  template:
+    metadata:
+      labels:
+        app: ide-server
+    spec:
+      containers:
+      - name: ide-server
+        image: ide-server:latest # Assuming you'll build and push this image
+        ports:
+        - containerPort: 8004
+        env:
+        - name: PORT
+          value: "8004"
+        - name: REDIS_URL
+          value: "redis://redis-service:6379"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        volumeMounts:
+        - name: workspace-volume
+          mountPath: /workspace
+      volumes:
+      - name: workspace-volume
+        persistentVolumeClaim:
+          claimName: ide-workspace-pvc # Assuming you have a PVC defined for workspace persistence
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ide-server-service
+  labels:
+    app: ide-server
+spec:
+  selector:
+    app: ide-server
+  ports:
+    - protocol: TCP
+      port: 8004
+      targetPort: 8004
+  type: ClusterIP

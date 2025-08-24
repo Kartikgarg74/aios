@@ -79,6 +79,62 @@ async def health_check():
         logger.error(f"Health check failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# --- System Resource Monitoring ---
+
+class ResourceLimits(BaseModel):
+    cpu_threshold: Optional[float] = None
+    memory_threshold: Optional[float] = None
+    disk_threshold: Optional[float] = None
+
+# In-memory storage for resource limits
+resource_limits: Dict[str, ResourceLimits] = {}
+
+@app.post("/system/set_resource_limits")
+async def set_resource_limits(limits: ResourceLimits):
+    """Set thresholds for CPU, memory, and disk usage."""
+    try:
+        if limits.cpu_threshold is not None:
+            resource_limits["cpu"] = limits.cpu_threshold
+        if limits.memory_threshold is not None:
+            resource_limits["memory"] = limits.memory_threshold
+        if limits.disk_threshold is not None:
+            resource_limits["disk"] = limits.disk_threshold
+        logger.info(f"Resource limits updated: {resource_limits}")
+        return {"message": "Resource limits set successfully", "current_limits": resource_limits}
+    except Exception as e:
+        logger.error(f"Failed to set resource limits: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class SystemResources(BaseModel):
+    cpu_percent: float
+    memory_percent: float
+    disk_usage: Dict[str, Any]
+    network_io: Dict[str, Any]
+
+@app.get("/system/resources", response_model=SystemResources)
+async def get_system_resources():
+    """Retrieves current system resource usage (CPU, memory, disk, network)."""
+    try:
+        cpu_percent = psutil.cpu_percent(interval=1)
+        memory_info = psutil.virtual_memory()
+        memory_percent = memory_info.percent
+
+        disk_usage = {disk.mountpoint: psutil.disk_usage(disk.mountpoint)._asdict() 
+                      for disk in psutil.disk_partitions()}
+        
+        network_io = psutil.net_io_counters(pernic=True)
+
+        return SystemResources(
+            cpu_percent=cpu_percent,
+            memory_percent=memory_percent,
+            disk_usage=disk_usage,
+            network_io=network_io
+        )
+    except Exception as e:
+        logger.error(f"Error getting system resources: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/system/info")
 async def get_system_info():
     """Get comprehensive system information"""
@@ -134,6 +190,27 @@ async def get_system_info():
         logger.error(f"Failed to get system info: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/system/monitor_resources")
+async def monitor_resources():
+    """Continuously monitors system resources against set thresholds."""
+    while True:
+        try:
+            cpu_percent = psutil.cpu_percent(interval=1)
+            memory_info = psutil.virtual_memory()
+            disk_usage = psutil.disk_usage('/')
+
+            if "cpu" in resource_limits and cpu_percent > resource_limits["cpu"]:
+                logger.warning(f"CPU usage ({cpu_percent}%) exceeds threshold ({resource_limits['cpu']}%)")
+            if "memory" in resource_limits and memory_info.percent > resource_limits["memory"]:
+                logger.warning(f"Memory usage ({memory_info.percent}%) exceeds threshold ({resource_limits['memory']}%)")
+            if "disk" in resource_limits and disk_usage.percent > resource_limits["disk"]:
+                logger.warning(f"Disk usage ({disk_usage.percent}%) exceeds threshold ({resource_limits['disk']}%)")
+
+            await asyncio.sleep(5) # Check every 5 seconds
+        except Exception as e:
+            logger.error(f"Error during resource monitoring: {e}")
+            break # Exit loop on error
+
 @app.post("/system/execute")
 async def execute_system_command(command: SystemCommand):
     """Execute system commands with safety checks"""
@@ -184,48 +261,215 @@ async def file_operation(operation: FileOperation):
         if operation.operation == "read":
             if not os.path.exists(target_path):
                 raise HTTPException(status_code=404, detail="File not found")
+            if not os.path.isfile(target_path):
+                raise HTTPException(status_code=400, detail="Path is not a file")
+            if not os.access(target_path, os.R_OK):
+                raise HTTPException(status_code=403, detail="Permission denied: Cannot read file")
             with open(target_path, 'r') as f:
                 content = f.read()
             return {"content": content, "path": target_path}
         
         elif operation.operation == "write":
+            if os.path.exists(target_path) and not os.path.isfile(target_path):
+                raise HTTPException(status_code=400, detail="Path exists and is not a file")
+            if os.path.exists(target_path) and not os.access(target_path, os.W_OK):
+                raise HTTPException(status_code=403, detail="Permission denied: Cannot write to file")
             os.makedirs(os.path.dirname(target_path), exist_ok=True)
             with open(target_path, 'w') as f:
                 f.write(operation.content or "")
             return {"message": "File written successfully", "path": target_path}
         
         elif operation.operation == "delete":
-            if os.path.exists(target_path):
-                os.remove(target_path)
-                if os.path.isfile(target_path):
-                    os.remove(target_path)
-                    return {"message": "File deleted successfully", "path": target_path}
-                elif os.path.isdir(target_path):
-                    import shutil
-                    shutil.rmtree(target_path)
-                    return {"message": "Directory deleted successfully", "path": target_path}
-                else:
-                    raise HTTPException(status_code=404, detail="Path not found or not a file/directory")
-            else:
-                raise HTTPException(status_code=404, detail="File or directory not found")
-        
+            if not os.path.exists(target_path):
+                raise HTTPException(status_code=404, detail="File not found")
+            if not os.path.isfile(target_path):
+                raise HTTPException(status_code=400, detail="Path is not a file")
+            if not os.access(target_path, os.W_OK):
+                raise HTTPException(status_code=403, detail="Permission denied: Cannot delete file")
+            os.remove(target_path)
+            return {"message": "File deleted successfully", "path": target_path}
+
         elif operation.operation == "create":
             if os.path.exists(target_path):
-                raise HTTPException(status_code=409, detail="File or directory already exists")
-            if target_path.endswith('/'): # Assume it's a directory if path ends with a slash
-                os.makedirs(target_path, exist_ok=True)
-                return {"message": "Directory created successfully", "path": target_path}
-            else:
-                os.makedirs(os.path.dirname(target_path), exist_ok=True)
-                with open(target_path, 'w') as f:
-                    f.write(operation.content or "")
-                return {"message": "File created successfully", "path": target_path}
-        
+                raise HTTPException(status_code=400, detail="File already exists")
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            with open(target_path, 'w') as f:
+                f.write(operation.content or "")
+            return {"message": "File created successfully", "path": target_path}
+
         else:
             raise HTTPException(status_code=400, detail="Invalid file operation")
 
     except Exception as e:
         logger.error(f"File operation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Hardware Interaction Module (USB/Bluetooth) ---
+
+@app.get("/hardware/usb/list")
+async def list_usb_devices():
+    """Lists connected USB devices."""
+    try:
+        # This is a placeholder. Actual implementation would require a library like pyusb or platform-specific commands.
+        # Example using a system command (lsusb on Linux, system_profiler SPUSBDataType on macOS)
+        if os.name == 'posix': # Linux or macOS
+            if os.uname().sysname == 'Darwin': # macOS
+                cmd = ["system_profiler", "SPUSBDataType"]
+            else: # Linux
+                cmd = ["lsusb"]
+            
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+
+            if process.returncode == 0:
+                return {"devices": stdout.decode().strip().split('\n')}
+            else:
+                logger.error(f"Failed to list USB devices: {stderr.decode()}")
+                raise HTTPException(status_code=500, detail=f"Failed to list USB devices: {stderr.decode()}")
+        else:
+            raise HTTPException(status_code=501, detail="USB device listing not supported on this OS")
+    except Exception as e:
+        logger.error(f"Error listing USB devices: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/hardware/bluetooth/list")
+async def list_bluetooth_devices():
+    """Lists paired or discovered Bluetooth devices."""
+    try:
+        # This is a placeholder. Actual implementation would require a library like PyBluez or platform-specific commands.
+        # Example using a system command (bluetoothctl on Linux, system_profiler SPBluetoothDataType on macOS)
+        if os.name == 'posix': # Linux or macOS
+            if os.uname().sysname == 'Darwin': # macOS
+                cmd = ["system_profiler", "SPBluetoothDataType"]
+            else: # Linux
+                cmd = ["bluetoothctl", "devices"]
+            
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+
+            if process.returncode == 0:
+                return {"devices": stdout.decode().strip().split('\n')}
+            else:
+                logger.error(f"Failed to list Bluetooth devices: {stderr.decode()}")
+                raise HTTPException(status_code=500, detail=f"Failed to list Bluetooth devices: {stderr.decode()}")
+        else:
+            raise HTTPException(status_code=501, detail="Bluetooth device listing not supported on this OS")
+    except Exception as e:
+        logger.error(f"Error listing Bluetooth devices: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Application Launching and Process Monitoring ---
+
+class ApplicationLaunch(BaseModel):
+    path: str
+    args: List[str] = []
+    name: Optional[str] = None # Optional name for the process
+
+class ProcessInfo(BaseModel):
+    pid: int
+    name: str
+    status: str
+    create_time: datetime
+    cpu_percent: float
+    memory_percent: float
+    cmdline: List[str]
+
+active_processes: Dict[int, subprocess.Popen] = {}
+
+@app.post("/applications/launch", response_model=ProcessInfo)
+async def launch_application(app_launch: ApplicationLaunch):
+    """Launches an application and returns its process information."""
+    try:
+        # Security: Basic path validation
+        if not os.path.isabs(app_launch.path):
+            raise HTTPException(status_code=400, detail="Application path must be absolute")
+        if not os.path.exists(app_launch.path):
+            raise HTTPException(status_code=404, detail="Application not found")
+        if not os.path.isfile(app_launch.path) and not os.access(app_launch.path, os.X_OK):
+            raise HTTPException(status_code=400, detail="Path is not an executable file")
+
+        process = subprocess.Popen([app_launch.path] + app_launch.args, 
+                                   stdout=subprocess.PIPE, 
+                                   stderr=subprocess.PIPE, 
+                                   text=True)
+        active_processes[process.pid] = process
+        logger.info(f"Launched application {app_launch.name or app_launch.path} with PID {process.pid}")
+        
+        p = psutil.Process(process.pid)
+        return ProcessInfo(
+            pid=p.pid,
+            name=p.name(),
+            status=p.status(),
+            create_time=datetime.fromtimestamp(p.create_time()),
+            cpu_percent=p.cpu_percent(interval=0.1),
+            memory_percent=p.memory_percent(),
+            cmdline=p.cmdline()
+        )
+    except Exception as e:
+        logger.error(f"Error launching application: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/applications/processes", response_model=List[ProcessInfo])
+async def list_processes():
+    """Lists all currently active processes launched by this server."""
+    processes_info = []
+    for pid, proc in list(active_processes.items()): # Use list to allow modification during iteration
+        if proc.poll() is not None: # Process has terminated
+            del active_processes[pid]
+            continue
+        try:
+            p = psutil.Process(pid)
+            processes_info.append(ProcessInfo(
+                pid=p.pid,
+                name=p.name(),
+                status=p.status(),
+                create_time=datetime.fromtimestamp(p.create_time()),
+                cpu_percent=p.cpu_percent(interval=0.1),
+                memory_percent=p.memory_percent(),
+                cmdline=p.cmdline()
+            ))
+        except psutil.NoSuchProcess:
+            del active_processes[pid]
+            continue
+        except Exception as e:
+            logger.warning(f"Could not get info for PID {pid}: {e}")
+            continue
+    return processes_info
+
+@app.post("/applications/terminate")
+async def terminate_application(pid: int):
+    """Terminates a launched application by its PID."""
+    if pid not in active_processes:
+        raise HTTPException(status_code=404, detail="Process not found or not launched by this server")
+    
+    try:
+        process = active_processes[pid]
+        process.terminate() # or process.kill()
+        process.wait(timeout=5) # Wait for process to terminate
+        del active_processes[pid]
+        logger.info(f"Terminated process with PID {pid}")
+        return {"message": f"Process {pid} terminated successfully"}
+    except psutil.NoSuchProcess:
+        del active_processes[pid] # Clean up if process already gone
+        raise HTTPException(status_code=404, detail="Process not found")
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        del active_processes[pid]
+        logger.warning(f"Process {pid} did not terminate gracefully, killed it.")
+        return {"message": f"Process {pid} terminated forcefully after timeout"}
+    except Exception as e:
+        logger.error(f"Error terminating process {pid}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/system/hardware/devices")

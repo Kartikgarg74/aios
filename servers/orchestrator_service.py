@@ -15,19 +15,30 @@ from typing import Dict, List, Any, Optional, Callable
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-import redis
+import redis.asyncio as redis
 import uuid
+import pickle
+from cachetools import TTLCache
 from contextlib import asynccontextmanager
 from security.auth import get_current_active_user, create_access_token, verify_password, get_password_hash
 from security.api_key_manager import APIKeyManager
 from fastapi.security import OAuth2PasswordRequestForm, APIKeyHeader
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
 from fastapi_limiter import FastAPILimiter
 from fastapi_limiter.depends import RateLimiter
 from gpt_oss_mcp_server.main_mcp_server import AppContext
+from servers.marketplace_server import InstallationRequest, VerificationRequest, UpdateRequest # New Import
+
+from logging_config import setup_logger, ServiceMonitor
+from config.ai_os_config import get_config_manager
+from utils.backup_system import create_backup
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = setup_logger("orchestrator_service")
+
+# Initialize ServiceMonitor
+monitor = ServiceMonitor("orchestrator_service")
 
 # Server configurations
 SERVER_PORTS = {
@@ -37,7 +48,8 @@ SERVER_PORTS = {
     "communication": 8003,
     "ide": 8004,
     "github": 8005,
-    "voice_ui": 8006
+    "voice_ui": 8006,
+    "marketplace_server": 8001 # New marketplace server port
 }
 
 class HealthResponse(BaseModel):
@@ -98,23 +110,57 @@ active_sessions: Dict[str, SessionInfo] = {}
 server_health_cache: Dict[str, ServerHealth] = {}
 command_history: List[CommandResponse] = []
 websocket_connections: Dict[str, WebSocket] = {}
+last_server_index: int = -1
+
+# Caching system (in-memory with TTL)
+cache = TTLCache(maxsize=1000, ttl=300) # Max 1000 items, 5 minutes TTL
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup logic
-    global redis_client
-    redis_client = redis.from_url("redis://localhost", encoding="utf8", decode_responses=True)
-    await FastAPILimiter.init(redis_client)
-    logger.info("FastAPI Limiter initialized.")
-    asyncio.create_task(monitor_server_health())
-    app.state.app_context = AppContext() # Initialize AppContext and attach to app state
+    # Startup
+    logger.info("Orchestrator service starting up")
+    app.state.app_context = AppContext()
+    await app.state.app_context.initialize()
+
+    redis_connection = redis.from_url("redis://localhost", encoding="utf-8", decode_responses=True)
+    await FastAPILimiter.init(redis_connection)
+
+    # Start scheduled backup task
+    config_manager = get_config_manager()
+    backup_config = config_manager.config.backup
+    if backup_config.enabled:
+        logger.info(f"Backup system enabled. Schedule: {backup_config.schedule}")
+        app.state.backup_task = asyncio.create_task(
+            schedule_backups(backup_config.schedule, backup_config.backup_path,
+                             backup_config.include_config, backup_config.include_data_dirs))
+
+    else:
+        logger.info("Backup system disabled.")
+
+    logger.info("Orchestrator service startup complete")
     yield
-    # Shutdown logic
-    if redis_client:
-        await redis_client.close()
-    logger.info("Central Orchestrator shutdown complete.")
+    # Shutdown
+    logger.info("Orchestrator service shutting down")
+    if hasattr(app.state, 'backup_task') and not app.state.backup_task.done():
+        app.state.backup_task.cancel()
+        logger.info("Backup task cancelled.")
+    await app.state.app_context.shutdown()
+    logger.info("Orchestrator service shutdown complete")
 
 app = FastAPI(title="Central Orchestrator", version="1.0.0", lifespan=lifespan)
+
+async def schedule_backups(schedule: str, backup_path: str, include_config: bool, include_data_dirs: List[str]):
+    """Schedules periodic backups based on a cron-like schedule."""
+    # This is a simplified scheduler. For production, consider a more robust cron library.
+    # For now, it will just run once after a delay for demonstration.
+    logger.info(f"Scheduling backup to run in 60 seconds for demonstration purposes.")
+    await asyncio.sleep(60) # Wait for 60 seconds after startup
+    logger.info("Executing scheduled backup.")
+    try:
+        create_backup(backup_path, include_config, include_data_dirs)
+        logger.info("Scheduled backup completed successfully.")
+    except Exception as e:
+        logger.error(f"Scheduled backup failed: {e}")
 
 async def initialize_orchestrator():
     """Initialize the orchestrator"""
@@ -141,63 +187,300 @@ async def cleanup_orchestrator():
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint for orchestrator"""
-    servers_status = {}
-    for server_name in SERVER_PORTS:
-        health = server_health_cache.get(server_name)
-        servers_status[server_name] = health.status if health else "unknown"
+    monitor.record_request()
     
-    queue_status = "connected" if redis_client else "memory_only"
-    
-    # Get system metrics
-    cpu_percent = psutil.cpu_percent(interval=1)
-    memory = psutil.virtual_memory()
-    disk = psutil.disk_usage('/')
-    
-    return HealthResponse(
-        status="healthy",
-        timestamp=datetime.now(),
-        servers=servers_status,
-        active_sessions=len(active_sessions),
-        message_queue_status=queue_status,
-        cpu_usage=cpu_percent,
-        memory_usage={
-            "total": memory.total,
-            "available": memory.available,
-            "percent": memory.percent,
-            "used": memory.used
-        },
-        disk_usage={
-            "total": disk.total,
-            "used": disk.used,
-            "free": disk.free,
-            "percent": (disk.used / disk.total) * 100
-        }
-    )
+    cache_key = "health_check_response"
+    cached_response = cache.get(cache_key)
+    if cached_response:
+        logger.info("Returning health check from cache.")
+        return cached_response
+
+    try:
+        servers_status = {}
+        for server_name in SERVER_PORTS:
+            health = server_health_cache.get(server_name)
+            servers_status[server_name] = health.status if health else "unknown"
+        
+        queue_status = "connected" if redis_client else "memory_only"
+        
+        # Get system metrics
+        cpu_percent = psutil.cpu_percent(interval=1)
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+        
+        monitor.record_success()
+        response = HealthResponse(
+            status="healthy",
+            timestamp=datetime.now(),
+            servers=servers_status,
+            active_sessions=len(active_sessions),
+            message_queue_status=queue_status,
+            cpu_usage=cpu_percent,
+            memory_usage={
+                "total": memory.total,
+                "available": memory.available,
+                "percent": memory.percent,
+                "used": memory.used
+            },
+            disk_usage={
+                "total": disk.total,
+                "used": disk.used,
+                "free": disk.free,
+                "percent": (disk.used / disk.total) * 100
+            }
+        )
+        cache[cache_key] = response
+        return response
+    except Exception as e:
+        monitor.record_error(e)
+        logger.error(f"Health check failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 api_key_manager = APIKeyManager(api_keys_file="./security/api_keys.json")
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
-async def get_api_key(api_key: str = Depends(api_key_header)):
+async def get_api_key(api_key: str = Depends(api_key_header),
+                        rate_limiter: RateLimiter = Depends(RateLimiter(times=5, seconds=60))):
     if api_key and api_key_manager.validate_api_key(api_key):
         return api_key
     raise HTTPException(status_code=403, detail="Could not validate API Key")
 
+@app.post("/api_key/rotate")
+async def rotate_api_key_endpoint(old_api_key: str = Depends(api_key_header),
+                                  current_user: str = Depends(get_current_user),
+                                  rate_limiter: RateLimiter = Depends(RateLimiter(times=1, seconds=3600))):
+    if not old_api_key:
+        raise HTTPException(status_code=400, detail="Old API key is required")
+
+    new_api_key = api_key_manager.rotate_api_key(old_api_key, current_user)
+    if new_api_key:
+        return {"message": "API key rotated successfully", "new_api_key": new_api_key}
+    raise HTTPException(status_code=400, detail="Failed to rotate API key. Check if the old key is valid and belongs to the current user.")
+
+
 @app.post("/token")
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(),
+                                   rate_limiter: RateLimiter = Depends(RateLimiter(times=5, seconds=60))):
+    monitor.record_request()
     # In a real application, you would fetch user from a database
     # For demonstration, let's use a hardcoded user
     user_db = {"username": "testuser", "hashed_password": get_password_hash("testpassword")}
 
     if form_data.username != user_db["username"] or not verify_password(form_data.password, user_db["hashed_password"]):
+        monitor.record_auth_failure(form_data.username, request.client.host)
         raise HTTPException(
             status_code=400, detail="Incorrect username or password"
         )
+    monitor.record_auth_success(user.username, request.client.host)
     access_token = create_access_token(data={"sub": user_db["username"]})
     return {"access_token": access_token, "token_type": "bearer"}
 
 @app.post("/command", response_model=CommandResponse, dependencies=[Depends(RateLimiter(times=5, seconds=1))])
 async def execute_command(request: CommandRequest, current_user: str = Depends(get_current_active_user), api_key: Optional[str] = Depends(get_api_key)):
     """Execute a command through the orchestrator"""
+    monitor.record_request()
+    session_id = request.session_id or str(uuid.uuid4())
+    user_id = current_user # Assuming current_user is the user_id
+
+    if session_id not in active_sessions:
+        active_sessions[session_id] = SessionInfo(
+            session_id=session_id,
+            user_id=user_id,
+            created_at=datetime.now(),
+            last_activity=datetime.now(),
+            active_servers=[],
+            pending_commands=[]
+        )
+    else:
+        # Ensure the session belongs to the current user if a user_id is associated
+        if active_sessions[session_id].user_id and active_sessions[session_id].user_id != user_id:
+            monitor.record_permission_denied(current_user.username, "access_endpoint", request.url.path, request.client.host)
+            raise HTTPException(status_code=403, detail="Session does not belong to the current user")
+        active_sessions[session_id].last_activity = datetime.now()
+
+    session_info = active_sessions[session_id]
+
+    # Store command in session_info for tracking
+    session_info.pending_commands.append(request.command)
+
+    # Add session_id to command parameters if not already present
+    if "session_id" not in request.parameters:
+        request.parameters["session_id"] = session_id
+
+    # Route command to target server
+    if request.target_server:
+        if request.target_server not in SERVER_PORTS:
+            monitor.record_error(f"Unknown target server: {request.target_server}")
+            raise HTTPException(status_code=400, detail=f"Unknown target server: {request.target_server}")
+        target_server_name = request.target_server
+    else:
+        # Simple round-robin load balancing for now
+        available_servers = [s for s, health in server_health_cache.items() if health.status == "healthy"]
+        if not available_servers:
+            monitor.record_error("No healthy servers available to route command.")
+            raise HTTPException(status_code=503, detail="No healthy servers available to route command.")
+        
+        # This is a very basic round-robin. For production, consider more sophisticated algorithms
+        # and persistent storage for last_server_index.
+        # Implement round-robin load balancing
+        global last_server_index
+        target_server_name = None
+        for _ in range(len(available_servers)):
+            last_server_index = (last_server_index + 1) % len(available_servers)
+            server_candidate = available_servers[last_server_index]
+            if server_health_cache.get(server_candidate) and server_health_cache[server_candidate].status == "healthy":
+                target_server_name = server_candidate
+                break
+        
+        if not target_server_name:
+            monitor.record_error("No healthy servers available after round-robin check.")
+            raise HTTPException(status_code=503, detail="No healthy servers available to route command.")
+
+    target_url = f"http://localhost:{SERVER_PORTS[target_server_name]}/execute_command"
+
+    start_time = datetime.now()
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(target_url, json=request.dict()) as response:
+                response.raise_for_status()
+                result = await response.json()
+        monitor.record_success()
+    except aiohttp.ClientError as e:
+        logger.error(f"Error routing command to {request.target_server}: {e}")
+        command_response = CommandResponse(
+            command_id=str(uuid.uuid4()),
+            status="failed",
+            error=f"Failed to route command: {e}",
+            timestamp=datetime.now(),
+            execution_time=(datetime.now() - start_time).total_seconds()
+        )
+        monitor.record_error(e)
+    except Exception as e:
+        logger.error(f"Unexpected error during command execution: {e}")
+        command_response = CommandResponse(
+            command_id=str(uuid.uuid4()),
+            status="failed",
+            error=f"Unexpected error: {e}",
+            timestamp=datetime.now(),
+            execution_time=(datetime.now() - start_time).total_seconds()
+        )
+        monitor.record_error(e)
+    else:
+        command_response = CommandResponse(
+            command_id=result.get("command_id", str(uuid.uuid4())),
+            status=result.get("status", "success"),
+            result=result.get("result"),
+            error=result.get("error"),
+            timestamp=datetime.now(),
+            execution_time=(datetime.now() - start_time).total_seconds()
+        )
+
+    # Remove command from pending list
+    if request.command in session_info.pending_commands:
+        session_info.pending_commands.remove(request.command)
+
+    command_history.append(command_response)
+    return command_response
+
+@app.post("/register_server")
+async def register_server(server_name: str, port: int):
+    monitor.record_request()
+    try:
+        if server_name not in SERVER_PORTS:
+            SERVER_PORTS[server_name] = port
+            logger.info(f"Registered new server: {server_name} on port {port}")
+            monitor.record_success()
+            return {"message": f"Server {server_name} registered successfully"}
+        else:
+            monitor.record_error(f"Server {server_name} already registered")
+            raise HTTPException(status_code=400, detail=f"Server {server_name} already registered")
+    except Exception as e:
+        monitor.record_error(e)
+        raise
+
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_ui_html():
+    return get_swagger_ui_html(openapi_url=app.openapi_url, title=app.title)
+
+@app.get(app.openapi_url, include_in_schema=False)
+async def get_openapi():
+    return app.openapi()
+
+@app.post("/deregister_server")
+async def deregister_server(server_name: str):
+    monitor.record_request()
+    try:
+        if server_name in SERVER_PORTS:
+            del SERVER_PORTS[server_name]
+            logger.info(f"Deregistered server: {server_name}")
+            monitor.record_success()
+            return {"message": f"Server {server_name} deregistered successfully"}
+        else:
+            monitor.record_error(f"Server {server_name} not found")
+            raise HTTPException(status_code=404, detail=f"Server {server_name} not found")
+    except Exception as e:
+        monitor.record_error(e)
+        raise
+
+@app.post("/marketplace/install", summary="Install a marketplace component")
+async def install_marketplace_component(request: InstallationRequest, current_user: str = Depends(get_current_active_user)):
+    monitor.record_request()
+    marketplace_port = SERVER_PORTS.get("marketplace_server")
+    if not marketplace_port:
+        monitor.record_error()
+        raise HTTPException(status_code=500, detail="Marketplace server not configured.")
+    
+    url = f"http://localhost:{marketplace_port}/install"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=request.dict(), timeout=config.command_execution.timeout_seconds) as response:
+                response.raise_for_status()
+                result = await response.json()
+                monitor.record_success()
+                return result
+    except aiohttp.ClientError as e:
+        monitor.record_error()
+        raise HTTPException(status_code=500, detail=f"Failed to communicate with marketplace server: {e}")
+
+@app.post("/marketplace/verify", summary="Verify a marketplace component")
+async def verify_marketplace_component(request: VerificationRequest, current_user: str = Depends(get_current_active_user)):
+    monitor.record_request()
+    marketplace_port = SERVER_PORTS.get("marketplace_server")
+    if not marketplace_port:
+        monitor.record_error()
+        raise HTTPException(status_code=500, detail="Marketplace server not configured.")
+    
+    url = f"http://localhost:{marketplace_port}/verify"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=request.dict(), timeout=config.command_execution.timeout_seconds) as response:
+                response.raise_for_status()
+                result = await response.json()
+                monitor.record_success()
+                return result
+    except aiohttp.ClientError as e:
+        monitor.record_error()
+        raise HTTPException(status_code=500, detail=f"Failed to communicate with marketplace server: {e}")
+
+@app.post("/marketplace/update", summary="Update a marketplace component")
+async def update_marketplace_component(request: UpdateRequest, current_user: str = Depends(get_current_active_user)):
+    monitor.record_request()
+    marketplace_port = SERVER_PORTS.get("marketplace_server")
+    if not marketplace_port:
+        monitor.record_error()
+        raise HTTPException(status_code=500, detail="Marketplace server not configured.")
+    
+    url = f"http://localhost:{marketplace_port}/update"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=request.dict(), timeout=config.command_execution.timeout_seconds) as response:
+                response.raise_for_status()
+                result = await response.json()
+                monitor.record_success()
+                return result
+    except aiohttp.ClientError as e:
+        monitor.record_error()
+        raise HTTPException(status_code=500, detail=f"Failed to communicate with marketplace server: {e}")
     command_id = str(uuid.uuid4())
     start_time = datetime.now()
     
@@ -256,7 +539,9 @@ async def execute_command(request: CommandRequest, current_user: str = Depends(g
         return response
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, session_id: str = "anonymous"):
+async def websocket_endpoint(websocket: WebSocket, session_id: str = "anonymous",
+                             rate_limiter: RateLimiter = Depends(RateLimiter(times=5, seconds=60))):
+    monitor.record_request()
     await websocket.accept()
     websocket_connections[session_id] = websocket
     logger.info(f"WebSocket connected: {session_id}")
@@ -267,13 +552,16 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = "anonymous"
             # Here you can add logic to process incoming WebSocket messages
             # For example, routing commands received via WebSocket
             # await websocket.send_text(f"Message text was: {data}")
+        monitor.record_success()
     except WebSocketDisconnect:
         del websocket_connections[session_id]
         logger.info(f"WebSocket disconnected: {session_id}")
+        monitor.record_success() # Disconnect is a successful end of connection
     except Exception as e:
         logger.error(f"WebSocket error for {session_id}: {e}")
         if session_id in websocket_connections:
             del websocket_connections[session_id]
+        monitor.record_error(e)
 
 async def broadcast_message(message: Dict):
     """Broadcasts a message to all connected WebSocket clients."""
@@ -366,40 +654,84 @@ async def send_command_to_server(server_name: str, command: str, parameters: Dic
             raise HTTPException(status_code=500, detail=f"Failed to communicate with {server_name} server: {e}")
 
 async def monitor_server_health():
-    """Periodically monitors the health of all registered servers."""
+    """Periodically checks the health of registered servers and sends alerts."""
     while True:
-        for server_name, port in SERVER_PORTS.items():
+        for server_name, port in list(SERVER_PORTS.items()): # Iterate over a copy to allow modification
             url = f"http://localhost:{port}/health"
-            status = "unknown"
-            response_time = 0.0
-            error = None
+            current_status = server_health_cache.get(server_name, ServerHealth(name=server_name, status="unknown", last_check=datetime.now(), response_time=0.0))
             try:
-                start_time = datetime.now()
                 async with aiohttp.ClientSession() as session:
+                    start_time = datetime.now()
                     async with session.get(url, timeout=5) as response:
-                        response.raise_for_status()
-                        status = "healthy"
                         response_time = (datetime.now() - start_time).total_seconds()
+                        if response.status == 200:
+                            new_status = "healthy"
+                            if current_status.status != "healthy":
+                                logger.info(f"Server {server_name} is now healthy.")
+                                # TODO: Send alert - Server {server_name} is back online
+                            server_health_cache[server_name] = ServerHealth(
+                                name=server_name,
+                                status=new_status,
+                                last_check=datetime.now(),
+                                response_time=response_time
+                            )
+                            logger.info(f"Server {server_name} is healthy. Response time: {response_time:.2f}s")
+                        else:
+                            new_status = "unhealthy"
+                            error_msg = f"HTTP Status: {response.status}"
+                            if current_status.status != "unhealthy":
+                                logger.warning(f"Server {server_name} is now unhealthy. Status: {response.status}")
+                                # TODO: Send alert - Server {server_name} is unhealthy: {error_msg}
+                            server_health_cache[server_name] = ServerHealth(
+                                name=server_name,
+                                status=new_status,
+                                last_check=datetime.now(),
+                                response_time=response_time,
+                                error=error_msg
+                            )
+                            logger.warning(f"Server {server_name} is unhealthy. Status: {response.status}")
             except aiohttp.ClientError as e:
-                status = "unhealthy"
-                error = str(e)
-                logger.warning(f"Health check failed for {server_name} ({url}): {e}")
+                new_status = "unreachable"
+                error_msg = str(e)
+                if current_status.status != "unreachable":
+                    logger.error(f"Server {server_name} is now unreachable: {e}")
+                    # TODO: Send alert - Server {server_name} is unreachable: {error_msg}
+                server_health_cache[server_name] = ServerHealth(
+                    name=server_name,
+                    status=new_status,
+                    last_check=datetime.now(),
+                    response_time=0.0,
+                    error=error_msg
+                )
+                logger.error(f"Server {server_name} is unreachable: {e}")
             except asyncio.TimeoutError:
-                status = "unhealthy"
-                error = "timeout"
-                logger.warning(f"Health check timed out for {server_name} ({url})")
+                new_status = "unhealthy"
+                error_msg = "Timeout"
+                if current_status.status != "unhealthy":
+                    logger.error(f"Server {server_name} health check timed out.")
+                    # TODO: Send alert - Server {server_name} health check timed out
+                server_health_cache[server_name] = ServerHealth(
+                    name=server_name,
+                    status=new_status,
+                    last_check=datetime.now(),
+                    response_time=0.0,
+                    error=error_msg
+                )
+                logger.error(f"Server {server_name} health check timed out.")
             except Exception as e:
-                status = "unhealthy"
-                error = str(e)
-                logger.error(f"Unexpected error during health check for {server_name} ({url}): {e}")
-            
-            server_health_cache[server_name] = ServerHealth(
-                name=server_name,
-                status=status,
-                last_check=datetime.now(),
-                response_time=response_time,
-                error=error
-            )
+                new_status = "error"
+                error_msg = str(e)
+                if current_status.status != "error":
+                    logger.error(f"An unexpected error occurred checking {server_name} health: {e}")
+                    # TODO: Send alert - An unexpected error occurred checking {server_name} health: {error_msg}
+                server_health_cache[server_name] = ServerHealth(
+                    name=server_name,
+                    status=new_status,
+                    last_check=datetime.now(),
+                    response_time=0.0,
+                    error=error_msg
+                )
+                logger.error(f"An unexpected error occurred checking {server_name} health: {e}")
         await asyncio.sleep(10) # Check every 10 seconds
 
 @app.get("/command_history", response_model=List[CommandResponse])
@@ -408,7 +740,8 @@ async def get_command_history():
     return command_history
 
 @app.get("/server_health", response_model=Dict[str, ServerHealth])
-async def get_server_health():
+async def get_server_health(request: Request, current_user: str = Depends(get_current_active_user),
+                              rate_limiter: RateLimiter = Depends(RateLimiter(times=5, seconds=60))):
     """Retrieves the current health status of all monitored servers."""
     return server_health_cache
 
@@ -422,59 +755,114 @@ async def post_broadcast_message(message: Dict):
 
 @app.post("/sessions", response_model=SessionInfo)
 async def create_session(request: Request, user_id: str = Depends(get_current_active_user), initial_data: Optional[Dict[str, Any]] = None):
-    session_id = str(uuid.uuid4())
-    session = request.app.state.app_context.create_user_session(user_id, session_id, initial_data)
-    logger.info(f"Session {session_id} created for user {user_id}")
-    return session
+    monitor.record_request()
+    try:
+        session_id = str(uuid.uuid4())
+        session = request.app.state.app_context.create_user_session(user_id, session_id, initial_data)
+        logger.info(f"Session {session_id} created for user {user_id}")
+        monitor.record_success()
+        return session
+    except Exception as e:
+        monitor.record_error(e)
+        raise
 
 @app.get("/sessions", response_model=List[SessionInfo])
-async def list_sessions(request: Request, user_id: str = Depends(get_current_active_user)):
-    return list(request.app.state.app_context.user_sessions.get(user_id, {}).values())
+async def list_sessions(request: Request, current_user: str = Depends(get_current_active_user),
+                          rate_limiter: RateLimiter = Depends(RateLimiter(times=5, seconds=60))):
+    monitor.record_request()
+    try:
+        sessions = list(request.app.state.app_context.user_sessions.get(user_id, {}).values())
+        monitor.record_success()
+        return sessions
+    except Exception as e:
+        monitor.record_error(e)
+        raise
 
 @app.get("/sessions/{session_id}", response_model=SessionInfo)
-async def get_session(session_id: str, request: Request, user_id: str = Depends(get_current_active_user)):
-    session = request.app.state.app_context.get_user_session(user_id, session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return session
+async def get_session(session_id: str, request: Request, current_user: str = Depends(get_current_active_user),
+                        rate_limiter: RateLimiter = Depends(RateLimiter(times=5, seconds=60))):
+    monitor.record_request()
+    try:
+        session = request.app.state.app_context.get_user_session(user_id, session_id)
+        if not session:
+            monitor.record_error("Session not found")
+            raise HTTPException(status_code=404, detail="Session not found")
+        monitor.record_success()
+        return session
+    except Exception as e:
+        monitor.record_error(e)
+        raise
 
 @app.put("/sessions/{session_id}/activity", response_model=SessionInfo)
-async def update_session_activity(session_id: str, request: Request, new_session_data: Optional[Dict[str, Any]] = None, user_id: str = Depends(get_current_active_user)):
-    session = request.app.state.app_context.get_user_session(user_id, session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    request.app.state.app_context.update_user_session(user_id, session_id, new_session_data)
-    session.last_activity = datetime.now()
-    return session
+async def update_session_activity(session_id: str, request: Request, new_session_data: Optional[Dict[str, Any]] = None, user_id: str = Depends(get_current_active_user),
+                                    rate_limiter: RateLimiter = Depends(RateLimiter(times=5, seconds=60))):
+    monitor.record_request()
+    try:
+        session = request.app.state.app_context.get_user_session(user_id, session_id)
+        if not session:
+            monitor.record_error("Session not found")
+            raise HTTPException(status_code=404, detail="Session not found")
+        request.app.state.app_context.update_user_session(user_id, session_id, new_session_data)
+        session.last_activity = datetime.now()
+        monitor.record_success()
+        return session
+    except Exception as e:
+        monitor.record_error(e)
+        raise
 
 @app.delete("/sessions/{session_id}", status_code=204)
-async def close_session(session_id: str, request: Request, user_id: str = Depends(get_current_active_user)):
-    session = request.app.state.app_context.get_user_session(user_id, session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    request.app.state.app_context.close_user_session(user_id, session_id)
+async def close_session(session_id: str, request: Request, current_user: str = Depends(get_current_active_user),
+                          rate_limiter: RateLimiter = Depends(RateLimiter(times=5, seconds=60))):
+    monitor.record_request()
+    try:
+        if not request.app.state.app_context.close_user_session(user_id, session_id):
+            monitor.record_error("Session not found")
+            raise HTTPException(status_code=404, detail="Session not found")
+        monitor.record_success()
+    except Exception as e:
+        monitor.record_error(e)
+        raise
     logger.info(f"Session {session_id} closed for user {user_id}")
-
 @app.get("/servers", response_model=List[ServerHealth])
 async def get_server_health():
     """Get health status of all servers"""
-    return list(server_health_cache.values())
-
+    monitor.record_request()
+    try:
+        health_status = [server.get_health() for server in app.state.app_context.server_manager.get_all_servers()]
+        monitor.record_success()
+        return health_status
+    except Exception as e:
+        monitor.record_error(e)
+        raise
 @app.post("/servers/{server_name}/health")
-async def check_server_health(server_name: str):
-    """Force health check for a specific server"""
-    if server_name not in SERVER_PORTS:
-        raise HTTPException(status_code=404, detail="Server not found")
-    
-    health = await check_server(server_name)
-    server_health_cache[server_name] = health
-    
-    return health
+async def check_server_health(server_name: str, request: Request, current_user: str = Depends(get_current_active_user),
+                                rate_limiter: RateLimiter = Depends(RateLimiter(times=5, seconds=60))):
+    """Manually trigger a health check for a specific server"""
+    monitor.record_request()
+    try:
+        server = app.state.app_context.server_manager.get_server(server_name)
+        if not server:
+            monitor.record_error("Server not found")
+            raise HTTPException(status_code=404, detail="Server not found")
+        await server.check_health()
+        monitor.record_success()
+        return {"message": f"Health check triggered for {server_name}"}
+    except Exception as e:
+        monitor.record_error(e)
+        raise
 
 @app.get("/commands/history")
-async def get_command_history(limit: int = 100):
+async def get_command_history(limit: int = 100, current_user: str = Depends(get_current_active_user),
+                                rate_limiter: RateLimiter = Depends(RateLimiter(times=5, seconds=60))):
     """Get command execution history"""
-    return command_history[-limit:]
+    monitor.record_request()
+    try:
+        history = command_history[-limit:]
+        monitor.record_success()
+        return history
+    except Exception as e:
+        monitor.record_error(e)
+        raise
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -649,14 +1037,21 @@ async def update_session_activity(session_id: str, server_name: str, new_session
 
 async def broadcast_to_websockets(message: Dict[str, Any]):
     """Broadcast message to all WebSocket connections"""
-    for connection in websocket_connections[:]:
-        try:
-            await connection.send_text(json.dumps(message))
-        except Exception as e:
-            logger.error(f"Failed to send WebSocket message: {e}")
-            if connection in websocket_connections:
-                websocket_connections.remove(connection)
+    monitor.record_request()
+    try:
+        for connection in websocket_connections[:]:
+            try:
+                await connection.send_text(json.dumps(message))
+            except Exception as e:
+                logger.error(f"Failed to send WebSocket message: {e}")
+                if connection in websocket_connections:
+                    websocket_connections.remove(connection)
+        monitor.record_success()
+    except Exception as e:
+        monitor.record_error(e)
+        raise
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=9000)

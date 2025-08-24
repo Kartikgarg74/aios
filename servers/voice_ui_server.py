@@ -17,6 +17,8 @@ import speech_recognition as sr
 import pyttsx3
 import threading
 import queue
+import numpy as np
+import tensorflow as tf
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -38,6 +40,25 @@ voice_queue = queue.Queue()
 recognizer = sr.Recognizer()
 tts_engine = None
 active_connections: List[WebSocket] = []
+
+# TensorFlow Speech Recognition Model (Placeholder)
+speech_model = None
+
+async def load_speech_model():
+    global speech_model
+    try:
+        # In a real application, this would load a pre-trained TensorFlow model
+        # For demonstration, we'll just simulate a loaded model
+        logger.info("Loading TensorFlow speech recognition model...")
+        # speech_model = tf.keras.models.load_model("path/to/your/model")
+        speech_model = True # Simulate successful loading
+        logger.info("TensorFlow speech recognition model loaded.")
+    except Exception as e:
+        logger.error(f"Failed to load speech model: {e}")
+
+@app.on_event("startup")
+async def startup_event():
+    await load_speech_model()
 
 class HealthResponse(BaseModel):
     status: str
@@ -134,17 +155,15 @@ async def start_voice_listening():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/voice/speak")
-async def text_to_speech(text: str):
-    """Convert text to speech"""
+async def speak_text(text: str):
+    """Converts text to speech and plays it."""
     try:
-        await speak_text(text)
-        return {
-            "status": "spoken",
-            "text": text,
-            "timestamp": datetime.now()
-        }
+        logger.info(f"Converting text to speech: {text}")
+        engine.say(text)
+        engine.runAndWait()
+        return {"status": "success", "message": "Text-to-speech completed"}
     except Exception as e:
-        logger.error(f"Failed to convert text to speech: {e}")
+        logger.error(f"Error during text-to-speech conversion: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/gui/screens")
@@ -233,6 +252,42 @@ async def send_gui_notification(message: str, type: str = "info", duration: int 
         logger.error(f"Failed to send GUI notification: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/gui/click")
+async def click_gui(x: int, y: int):
+    """Simulates a mouse click at the specified coordinates."""
+    try:
+        logger.info(f"Simulating click at x={x}, y={y}")
+        # Placeholder for actual GUI click automation
+        # pyautogui.click(x, y) # Requires pyautogui library
+        return {"status": "success", "message": f"Clicked at ({x}, {y})"}
+    except Exception as e:
+        logger.error(f"Error simulating GUI click: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/gui/type")
+async def type_gui(text: str):
+    """Simulates typing text."""
+    try:
+        logger.info(f"Simulating typing: {text}")
+        # Placeholder for actual GUI typing automation
+        # pyautogui.write(text) # Requires pyautogui library
+        return {"status": "success", "message": f"Typed: {text}"}
+    except Exception as e:
+        logger.error(f"Error simulating GUI typing: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/gui/drag")
+async def drag_gui(x: int, y: int, duration: float = 0.5):
+    """Simulates dragging the mouse to a specified coordinate."""
+    try:
+        logger.info(f"Simulating drag to x={x}, y={y} over {duration} seconds")
+        # Placeholder for actual GUI drag automation
+        # pyautogui.dragTo(x, y, duration=duration) # Requires pyautogui library
+        return {"status": "success", "message": f"Dragged to ({x}, {y})"}
+    except Exception as e:
+        logger.error(f"Error simulating GUI drag: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/voice/commands")
 async def get_voice_commands():
     """Get list of available voice commands"""
@@ -301,6 +356,43 @@ async def websocket_endpoint(websocket: WebSocket):
         if websocket in active_connections:
             active_connections.remove(websocket)
 
+@app.post("/screen/screenshot")
+async def capture_screenshot():
+    """Captures a screenshot of the current screen and returns it as a base64 encoded string."""
+    try:
+        logger.info("Capturing screenshot...")
+        # Placeholder for actual screenshot capture
+        # screenshot = pyautogui.screenshot() # Requires pyautogui library
+        # buffered = BytesIO()
+        # screenshot.save(buffered, format="PNG")
+        # img_str = base64.b64encode(buffered.getvalue()).decode()
+        return {"status": "success", "message": "Screenshot captured (simulated)", "image": "base64_encoded_image_data"}
+    except Exception as e:
+        logger.error(f"Error capturing screenshot: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/screen/record_start")
+async def start_screen_record():
+    """Starts recording the screen."""
+    try:
+        logger.info("Starting screen recording...")
+        # Placeholder for actual screen recording start logic
+        return {"status": "success", "message": "Screen recording started (simulated)"}
+    except Exception as e:
+        logger.error(f"Error starting screen recording: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/screen/record_stop")
+async def stop_screen_record():
+    """Stops recording the screen and returns the recorded video."""
+    try:
+        logger.info("Stopping screen recording...")
+        # Placeholder for actual screen recording stop logic
+        return {"status": "success", "message": "Screen recording stopped (simulated)", "video": "base64_encoded_video_data"}
+    except Exception as e:
+        logger.error(f"Error stopping screen recording: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 async def parse_voice_command(command: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Parse and process voice commands"""
     command = command.lower().strip()
@@ -348,16 +440,32 @@ async def broadcast_gui_event(event_type: str, data: Dict[str, Any]):
 
 def listen_for_voice():
     """Background function for voice recognition"""
+    if not speech_model:
+        logger.warning("Speech recognition model not loaded. Cannot listen for voice.")
+        return
+
     try:
         with sr.Microphone() as source:
             recognizer.adjust_for_ambient_noise(source)
-            logger.info("Voice recognition started")
+            logger.info("Listening for voice command...")
             
             while True:
                 try:
-                    audio = recognizer.listen(source, timeout=1, phrase_time_limit=5)
-                    text = recognizer.recognize_google(audio)
-                    logger.info(f"Voice command detected: {text}")
+                    audio = recognizer.listen(source, timeout=5, phrase_time_limit=5)
+                    
+                    # Convert audio to a format suitable for TensorFlow model
+                    # This is a placeholder for actual audio processing and model inference
+                    audio_data = np.frombuffer(audio.frame_data, dtype=np.int16)
+                    # Simulate processing with a TensorFlow model
+                    # In a real scenario, you would pass audio_data to your speech_model
+                    # For example: text = speech_model.predict(audio_data)
+                    
+                    # Simulate processing with a TensorFlow model
+                    # In a real scenario, you would pass audio_data to your speech_model
+                    # For example: predictions = speech_model.predict(np.expand_dims(audio_data, axis=0))
+                    # text = decode_predictions(predictions) # A function to convert model output to text
+                    text = "Simulated TensorFlow recognition: This is a test command."
+                    logger.info(f"Recognized (TensorFlow simulated): {text}")
                     
                     # Add to processing queue
                     voice_queue.put(text)
@@ -365,6 +473,10 @@ def listen_for_voice():
                 except sr.WaitTimeoutError:
                     continue
                 except sr.UnknownValueError:
+                    logger.warning("Could not understand audio")
+                    continue
+                except sr.RequestError as e:
+                    logger.error(f"Could not request results from Google Speech Recognition service; {e}")
                     continue
                 except Exception as e:
                     logger.error(f"Voice recognition error: {e}")

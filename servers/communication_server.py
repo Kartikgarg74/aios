@@ -6,20 +6,33 @@ Handles inter-server messaging and coordination between MCP servers
 
 import asyncio
 import json
-import logging
+import os
 from datetime import datetime
-from typing import Dict, List, Any, Optional
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from typing import Dict, Any, Callable, List, Optional
+
+import redis.asyncio as redis
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import redis.asyncio as redis
-from dataclasses import dataclass
+
+from loguru import logger
+from pyppeteer import launch
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import imaplib
+import email
+from twilio.rest import Client
+
+from logging_config import setup_logger, ServiceMonitor
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = setup_logger("communication_server")
 
 app = FastAPI(title="Communication Server", version="1.0.0")
+
+# Initialize ServiceMonitor
+monitor = ServiceMonitor("communication_server")
 
 # Add CORS middleware
 app.add_middleware(
@@ -47,11 +60,14 @@ class MessageQueue:
             self.redis_client = None
     
     async def publish_message(self, channel: str, message: Dict[str, Any]):
+        message_obj = Message(**message)
         if self.redis_client:
-            await self.redis_client.publish(channel, json.dumps(message))
+            # Store message in a pending queue or hash for tracking
+            await self.redis_client.hset(f"pending_messages:{message_obj.recipient}", message_obj.id, json.dumps(message_obj.dict()))
+            await self.redis_client.publish(channel, json.dumps(message_obj.dict()))
         else:
-            self.memory_queue.append({"channel": channel, "message": message})
-            await self.notify_subscribers(channel, message)
+            self.memory_queue.append({"channel": channel, "message": message_obj.dict()})
+            await self.notify_subscribers(channel, message_obj.dict())
     
     async def subscribe(self, channel: str, callback):
         if channel not in self.subscribers:
@@ -78,6 +94,12 @@ class Message(BaseModel):
     payload: Dict[str, Any]
     timestamp: datetime
     priority: int = 1
+    status: str = "pending"  # pending, sent, delivered, acknowledged, failed
+    retries: int = 0
+
+class MessageAck(BaseModel):
+    message_id: str
+    status: str = "acknowledged"
 
 class HealthResponse(BaseModel):
     status: str
@@ -89,10 +111,13 @@ class HealthResponse(BaseModel):
 @app.on_event("startup")
 async def startup_event():
     await message_queue.connect_redis()
+    asyncio.create_task(retry_undelivered_messages())
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint for communication server"""
+    monitor.record_request()
+    monitor.record_success()
     return HealthResponse(
         status="healthy",
         timestamp=datetime.now(),
@@ -104,19 +129,64 @@ async def health_check():
 @app.post("/send")
 async def send_message(message: Message):
     """Send a message between MCP servers"""
+    monitor.record_request()
     try:
+        message.timestamp = datetime.now()
+        message.status = "pending"
         if message.recipient in active_websocket_connections:
+            # For direct WebSocket, we assume it's sent immediately
             await active_websocket_connections[message.recipient].send_json(message.dict())
+            message.status = "sent"
             logger.info(f"Direct message sent to {message.recipient}")
-        else:
-            await message_queue.publish_message(
-                f"messages:{message.recipient}",
-                message.dict()
-            )
-            logger.info(f"Message published to Redis for {message.recipient}")
-        return {"status": "sent", "message_id": message.id}
+        
+        await message_queue.publish_message(
+            f"messages:{message.recipient}",
+            message.dict()
+        )
+        logger.info(f"Message published to Redis for {message.recipient}")
+        monitor.record_success()
+        return {"status": message.status, "message_id": message.id}
     except Exception as e:
+        monitor.record_error(e)
         logger.error(f"Failed to send message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/phone/send_sms")
+async def send_sms(account_sid: str, auth_token: str, from_number: str, to_number: str, message_body: str):
+    """Send an SMS message using Twilio."""
+    monitor.record_request()
+    try:
+        client = Client(account_sid, auth_token)
+        message = client.messages.create(
+            to=to_number,
+            from_=from_number,
+            body=message_body
+        )
+        logger.info(f"SMS sent to {to_number} with SID: {message.sid}")
+        monitor.record_success()
+        return {"status": "success", "message_sid": message.sid}
+    except Exception as e:
+        monitor.record_error(e)
+        logger.error(f"Failed to send SMS: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/phone/make_call")
+async def make_call(account_sid: str, auth_token: str, from_number: str, to_number: str, twiml_url: str):
+    """Make a phone call using Twilio."""
+    monitor.record_request()
+    try:
+        client = Client(account_sid, auth_token)
+        call = client.calls.create(
+            to=to_number,
+            from_=from_number,
+            url=twiml_url  # URL to TwiML instructions for the call
+        )
+        logger.info(f"Call initiated to {to_number} with SID: {call.sid}")
+        monitor.record_success()
+        return {"status": "success", "call_sid": call.sid}
+    except Exception as e:
+        monitor.record_error(e)
+        logger.error(f"Failed to make call: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/messages/{recipient}")
@@ -189,11 +259,14 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
             data = await websocket.receive_json()
             message = Message(**data)
             
-            # Store message in Redis history for recipient
+            # Store message in Redis history for recipient and mark as delivered
             if message_queue.redis_client:
                 key = f"messages_history:{message.recipient}"
+                message.status = "delivered"
                 await message_queue.redis_client.rpush(key, json.dumps(message.dict()))
                 await message_queue.redis_client.ltrim(key, -1000, -1) # Keep last 1000 messages
+                # Remove from pending messages once delivered
+                await message_queue.redis_client.hdel(f"pending_messages:{message.recipient}", message.id)
 
             # Publish message to recipient's channel
             await message_queue.publish_message(
@@ -286,9 +359,7 @@ async def disconnect_server(server_id: str):
     except Exception as e:
         logger.error(f"Failed to disconnect server {server_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-            "payload": server_info,
-            "timestamp": datetime.now()
-        }
+
         
         await message_queue.publish_message(
             "server_registrations",
@@ -298,6 +369,109 @@ async def disconnect_server(server_id: str):
         return {"status": "registered", "server_id": server_id}
     except Exception as e:
         logger.error(f"Failed to register server: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/message/ack")
+async def acknowledge_message(ack: MessageAck):
+    """Endpoint for clients to acknowledge message receipt."""
+    if message_queue.redis_client:
+        # Remove message from pending queue
+        await message_queue.redis_client.hdel(f"pending_messages:{ack.status}", ack.message_id)
+        logger.info(f"Message {ack.message_id} acknowledged and removed from pending.")
+    return {"status": "acknowledged", "message_id": ack.message_id}
+
+@app.post("/whatsapp/send_message")
+async def send_whatsapp_message(recipient: str, message: str):
+    """Send a WhatsApp message using Puppeteer."""
+    browser = None
+    try:
+        browser = await launch(headless=True)  # Set to False for visual debugging
+        page = await browser.newPage()
+        await page.goto("https://web.whatsapp.com/")
+
+        # Wait for WhatsApp Web to load and QR code to disappear (you might need to scan it manually first)
+        await page.waitForSelector('._1JnLS', {'timeout': 60000})  # Selector for chat list
+
+        # Search for the recipient
+        await page.click('._2_F54')  # Click search icon
+        await page.type('._2_F54 ._3FRCZ', recipient) # Type recipient name
+        await page.waitForSelector(f'span[title="{recipient}"]')
+        await page.click(f'span[title="{recipient}"]')
+
+        # Type and send the message
+        await page.waitForSelector('._1UWac ._3FRCZ') # Selector for message input box
+        await page.type('._1UWac ._3FRCZ', message)
+        await page.keyboard.press('Enter')
+
+        logger.info(f"WhatsApp message sent to {recipient}")
+        return {"status": "success", "message": "WhatsApp message sent"}
+    except Exception as e:
+        logger.error(f"Failed to send WhatsApp message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if browser:
+            await browser.close()
+
+@app.post("/email/send")
+async def send_email(sender_email: str, sender_password: str, recipient_email: str, subject: str, body: str):
+    """Send an email via SMTP."""
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = sender_email
+        msg['To'] = recipient_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
+
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+            smtp.login(sender_email, sender_password)
+            smtp.send_message(msg)
+        logger.info(f"Email sent from {sender_email} to {recipient_email}")
+        return {"status": "success", "message": "Email sent successfully"}
+    except Exception as e:
+        logger.error(f"Failed to send email: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/email/inbox")
+async def get_inbox(email_address: str, password: str, num_emails: int = 5):
+    """Retrieve emails from IMAP inbox."""
+    try:
+        mail = imaplib.IMAP4_SSL('imap.gmail.com')
+        mail.login(email_address, password)
+        mail.select('inbox')
+
+        status, email_ids = mail.search(None, 'ALL')
+        email_id_list = email_ids[0].split()
+        latest_emails = email_id_list[-num_emails:]
+
+        emails = []
+        for email_id in latest_emails:
+            status, msg_data = mail.fetch(email_id, '(RFC822)')
+            for response_part in msg_data:
+                if isinstance(response_part, tuple):
+                    msg = email.message_from_bytes(response_part[1])
+                    email_info = {
+                        "From": msg['from'],
+                        "To": msg['to'],
+                        "Subject": msg['subject'],
+                        "Date": msg['date'],
+                        "Body": ""
+                    }
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            ctype = part.get_content_type()
+                            cdisposition = str(part.get("Content-Disposition"))
+
+                            if ctype == 'text/plain' and 'attachment' not in cdisposition:
+                                email_info["Body"] = part.get_payload(decode=True).decode()
+                                break
+                    else:
+                        email_info["Body"] = msg.get_payload(decode=True).decode()
+                    emails.append(email_info)
+        mail.logout()
+        logger.info(f"Retrieved {len(emails)} emails for {email_address}")
+        return {"status": "success", "emails": emails}
+    except Exception as e:
+        logger.error(f"Failed to retrieve emails: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

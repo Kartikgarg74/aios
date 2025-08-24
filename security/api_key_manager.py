@@ -51,6 +51,17 @@ class APIKeyManager:
             return True
         return False
 
+    def rotate_api_key(self, old_api_key: str, user_id: str, expires_in_days: int = 365) -> Optional[str]:
+        if not self.validate_api_key(old_api_key) or self.api_keys.get(old_api_key, {}).get("user_id") != user_id:
+            return None
+
+        # Revoke the old key
+        self.revoke_api_key(old_api_key)
+
+        # Generate a new key
+        new_api_key = self.generate_api_key(user_id, expires_in_days)
+        return new_api_key
+
     def get_user_api_keys(self, user_id: str) -> Dict[str, Dict[str, any]]:
         return {key: info for key, info in self.api_keys.items() if info.get("user_id") == user_id}
 

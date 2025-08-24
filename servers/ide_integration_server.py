@@ -18,11 +18,15 @@ import re
 import shutil
 import asyncio
 
+from logging_config import setup_logger, ServiceMonitor
+
 # Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = setup_logger("ide_integration_server")
 
 app = FastAPI(title="IDE Integration Server", version="1.0.0")
+
+# Initialize ServiceMonitor
+monitor = ServiceMonitor("ide_integration_server")
 
 # Add CORS middleware
 app.add_middleware(
@@ -69,6 +73,8 @@ class HealthResponse(BaseModel):
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint for IDE integration server"""
+    monitor.record_request()
+    monitor.record_success()
     return HealthResponse(
         status="healthy",
         timestamp=datetime.now(),
@@ -79,6 +85,7 @@ async def health_check():
 @app.post("/analyze/code")
 async def analyze_code(analysis: CodeAnalysis):
     """Analyze code for issues, patterns, and suggestions"""
+    monitor.record_request()
     try:
         issues = []
         
@@ -91,6 +98,7 @@ async def analyze_code(analysis: CodeAnalysis):
         else:
             issues = await analyze_generic_code(analysis.content)
         
+        monitor.record_success()
         return {
             "file_path": analysis.file_path,
             "language": analysis.language,
@@ -103,12 +111,14 @@ async def analyze_code(analysis: CodeAnalysis):
             }
         }
     except Exception as e:
+        monitor.record_error(e)
         logger.error(f"Code analysis failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/format/code")
 async def format_code(code_format: CodeFormat):
     """Format code using language-specific formatters"""
+    monitor.record_request()
     try:
         formatted_content = code_format.content
         if code_format.language.lower() == "python":
@@ -122,10 +132,13 @@ async def format_code(code_format: CodeFormat):
                 stdout, stderr = await process.communicate(input=code_format.content.encode())
                 if process.returncode == 0:
                     formatted_content = stdout.decode()
+                    monitor.record_success()
                 else:
+                    monitor.record_error(f"Black formatting failed: {stderr.decode()}")
                     logger.error(f"Black formatting failed: {stderr.decode()}")
                     raise HTTPException(status_code=500, detail=f"Black formatting failed: {stderr.decode()}")
             else:
+                monitor.record_error("Black is not installed")
                 raise HTTPException(status_code=500, detail="Black is not installed. Please install it: pip install black")
         elif code_format.language.lower() in ["javascript", "typescript"]:
             if shutil.which("prettier"):
@@ -138,10 +151,13 @@ async def format_code(code_format: CodeFormat):
                 stdout, stderr = await process.communicate(input=code_format.content.encode())
                 if process.returncode == 0:
                     formatted_content = stdout.decode()
+                    monitor.record_success()
                 else:
+                    monitor.record_error(f"Prettier formatting failed: {stderr.decode()}")
                     logger.error(f"Prettier formatting failed: {stderr.decode()}")
                     raise HTTPException(status_code=500, detail=f"Prettier formatting failed: {stderr.decode()}")
             else:
+                monitor.record_error("Prettier is not installed")
                 raise HTTPException(status_code=500, detail="Prettier is not installed. Please install it: npm install -g prettier")
         elif code_format.language.lower() == "go":
             if shutil.which("gofmt"):
@@ -154,27 +170,35 @@ async def format_code(code_format: CodeFormat):
                 stdout, stderr = await process.communicate(input=code_format.content.encode())
                 if process.returncode == 0:
                     formatted_content = stdout.decode()
+                    monitor.record_success()
                 else:
+                    monitor.record_error(f"Gofmt formatting failed: {stderr.decode()}")
                     logger.error(f"Gofmt formatting failed: {stderr.decode()}")
                     raise HTTPException(status_code=500, detail=f"Gofmt formatting failed: {stderr.decode()}")
             else:
+                monitor.record_error("Gofmt is not installed")
                 raise HTTPException(status_code=500, detail="Gofmt is not installed. Please install Go and ensure gofmt is in your PATH.")
         else:
+            monitor.record_error(f"Formatting not supported for language: {code_format.language}")
             raise HTTPException(status_code=400, detail=f"Formatting not supported for language: {code_format.language}")
         
         return {"formatted_content": formatted_content}
     except Exception as e:
+        monitor.record_error(e)
         logger.error(f"Code formatting failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/refactor/rename")
 async def refactor_rename(refactor: CodeRefactor):
     """Perform a simple rename refactoring within the code content"""
+    monitor.record_request()
     try:
         # This is a basic string replacement. For true refactoring, a language server would be needed.
         new_content = refactor.content.replace(refactor.old_name, refactor.new_name)
+        monitor.record_success()
         return {"refactored_content": new_content}
     except Exception as e:
+        monitor.record_error(e)
         logger.error(f"Refactoring failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 

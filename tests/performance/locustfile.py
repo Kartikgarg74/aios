@@ -28,6 +28,19 @@ class MCPUser(HttpUser):
             "recipient": "system",
             "message": "test"
         })
+        self.client.post("/whatsapp/send_message", json={
+            "phone_number": "+1234567890",
+            "message": "Hello from Locust!"
+        })
+        self.client.post("/email/send", json={
+            "recipient": "test@example.com",
+            "subject": "Locust Test Email",
+            "body": "This is a test email from Locust."
+        })
+        self.client.post("/phone/send_sms", json={
+            "to": "+1234567890",
+            "message": "Locust SMS Test"
+        })
     
     @task(1)
     def voice_commands(self):
@@ -36,3 +49,14 @@ class MCPUser(HttpUser):
             "command": "open dashboard",
             "context": {"user": "test"}
         })
+
+    @task(2)
+    def orchestrator_requests(self):
+        """Test orchestrator service endpoints"""
+        self.client.post("/orchestrator/process", json={
+            "request_id": "locust_orch_req",
+            "session_id": "locust_orch_sess",
+            "command": "test_command",
+            "parameters": {"param1": "value1"}
+        })
+        self.client.get("/orchestrator/status/locust_orch_req")

@@ -29,6 +29,7 @@ package-lock.json
 # IDE specific
 .idea/
 .vscode/
+!vscode-extension/samantha-ide-integration/
 
 # Backup files
 *.bak

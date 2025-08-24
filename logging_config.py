@@ -1,5 +1,7 @@
 import logging
 from logging.handlers import RotatingFileHandler
+import logging
+from logging.handlers import RotatingFileHandler
 import os
 from datetime import datetime
 
@@ -46,6 +48,27 @@ def setup_logger(name, log_level=logging.INFO):
     
     return logger
 
+def setup_security_logger(name="security_audit", log_level=logging.INFO):
+    """
+    Configure a dedicated logger for security audit events.
+    """
+    logger = logging.getLogger(name)
+    logger.setLevel(log_level)
+
+    formatter = logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+    log_file = os.path.join(LOG_DIR, "security-audit.log")
+    file_handler = RotatingFileHandler(
+        log_file, maxBytes=10*1024*1024, backupCount=5
+    )
+    file_handler.setFormatter(formatter)
+
+    logger.addHandler(file_handler)
+    return logger
+
 # Monitoring configuration
 class ServiceMonitor:
     """
@@ -54,11 +77,16 @@ class ServiceMonitor:
     def __init__(self, service_name):
         self.service_name = service_name
         self.logger = setup_logger(f"monitor.{service_name}")
+        self.security_logger = setup_security_logger()
         self.metrics = {
             'request_count': 0,
             'error_count': 0,
             'last_error': None,
-            'last_success': None
+            'last_success': None,
+            'auth_success_count': 0,
+            'auth_failure_count': 0,
+            'permission_denied_count': 0,
+            'suspicious_activity_count': 0
         }
     
     def record_request(self):
@@ -77,6 +105,29 @@ class ServiceMonitor:
     def record_success(self):
         """Record a successful operation"""
         self.metrics['last_success'] = datetime.utcnow().isoformat()
+
+    def record_auth_success(self, username, ip_address):
+        """Record a successful authentication attempt"""
+        self.metrics['auth_success_count'] += 1
+        self.security_logger.info(f"AUTH_SUCCESS: User '{username}' from IP '{ip_address}' authenticated successfully.")
+
+    def record_auth_failure(self, username, ip_address):
+        """Record a failed authentication attempt"""
+        self.metrics['auth_failure_count'] += 1
+        self.security_logger.warning(f"AUTH_FAILURE: User '{username}' from IP '{ip_address}' failed to authenticate.")
+
+    def record_permission_denied(self, user, action, resource, ip_address):
+        """Record a permission denied event"""
+        self.metrics['permission_denied_count'] += 1
+        self.security_logger.warning(f"PERMISSION_DENIED: User '{user}' from IP '{ip_address}' attempted to perform '{action}' on '{resource}' without permission.")
+
+    def record_suspicious_activity(self, activity_details, user=None, ip_address=None):
+        """Record suspicious activity"""
+        self.metrics['suspicious_activity_count'] += 1
+        log_message = f"SUSPICIOUS_ACTIVITY: {activity_details}"
+        if user: log_message += f" (User: {user})"
+        if ip_address: log_message += f" (IP: {ip_address})"
+        self.security_logger.critical(log_message)
     
     def get_metrics(self):
         """Return current metrics"""

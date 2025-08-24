@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: github-server-deployment
+  labels:
+    app: github-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: github-server
+  template:
+    metadata:
+      labels:
+        app: github-server
+    spec:
+      containers:
+      - name: github-server
+        image: github-server:latest # Assuming you'll build and push this image
+        ports:
+        - containerPort: 8005
+        env:
+        - name: PORT
+          value: "8005"
+        - name: REDIS_URL
+          value: "redis://redis-service:6379"
+        - name: GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: github-secret
+              key: github_token
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: github-server-service
+  labels:
+    app: github-server
+spec:
+  selector:
+    app: github-server
+  ports:
+    - protocol: TCP
+      port: 8005
+      targetPort: 8005
+  type: ClusterIP

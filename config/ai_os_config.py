@@ -18,6 +18,17 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class BackupConfig:
+    """Configuration for automated backup system"""
+    enabled: bool = False
+    schedule: str = "0 2 * * *"  # Cron string for daily at 2 AM
+    retention_days: int = 30
+    backup_path: str = "./backups"
+    include_config: bool = True
+    include_data_dirs: List[str] = field(default_factory=list)
+
+
+@dataclass
 class ServerConfig:
     """Configuration for individual MCP servers"""
     enabled: bool = True
@@ -141,6 +152,9 @@ class AIOSConfig:
     
     # UI configuration
     ui: UIConfig = field(default_factory=UIConfig)
+
+    # Backup configuration
+    backup: BackupConfig = field(default_factory=BackupConfig)
     
     # API keys and secrets (will be encrypted)
     api_keys: Dict[str, str] = field(default_factory=dict)
@@ -198,6 +212,46 @@ class ConfigManager:
             
             # Load from environment variables
             self._load_from_env()
+
+    def _update_from_dict(self, data: Dict[str, Any]):
+        """Recursively update dataclass fields from a dictionary."""
+        for key, value in data.items():
+            if hasattr(self.config, key):
+                field_type = self.config.__dataclass_fields__[key].type
+                if isinstance(value, dict) and hasattr(field_type, '__dataclass_fields__'):
+                    # Nested dataclass
+                    nested_instance = getattr(self.config, key)
+                    for nested_key, nested_value in value.items():
+                        if hasattr(nested_instance, nested_key):
+                            setattr(nested_instance, nested_key, nested_value)
+                elif isinstance(value, list) and hasattr(field_type, '_name') and field_type._name == 'List':
+                    # List field
+                    setattr(self.config, key, value)
+                else:
+                    # Direct assignment
+                    setattr(self.config, key, value)
+
+    def create_backup(self, output_file: str):
+        """Creates a backup of the current configuration to a specified file."""
+        try:
+            with open(output_file, 'w') as f:
+                yaml.dump(asdict(self.config), f, indent=2)
+            logger.info(f"Configuration backup created at {output_file}")
+        except Exception as e:
+            logger.error(f"Error creating configuration backup: {e}")
+            raise
+
+    def restore_backup(self, backup_file: str):
+        """Restores the configuration from a specified backup file."""
+        try:
+            with open(backup_file, 'r') as f:
+                backup_data = yaml.safe_load(f)
+            self._update_from_dict(backup_data)
+            self.save()
+            logger.info(f"Configuration restored from {backup_file}")
+        except Exception as e:
+            logger.error(f"Error restoring configuration from backup: {e}")
+            raise
             
             # Validate configuration
             self.validate()

@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: communication-server-deployment
+  labels:
+    app: communication-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: communication-server
+  template:
+    metadata:
+      labels:
+        app: communication-server
+    spec:
+      containers:
+      - name: communication-server
+        image: communication-server:latest # Assuming you'll build and push this image
+        ports:
+        - containerPort: 8003
+        env:
+        - name: PORT
+          value: "8003"
+        - name: REDIS_URL
+          value: "redis://redis-service:6379"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: communication-server-service
+  labels:
+    app: communication-server
+spec:
+  selector:
+    app: communication-server
+  ports:
+    - protocol: TCP
+      port: 8003
+      targetPort: 8003
+  type: ClusterIP

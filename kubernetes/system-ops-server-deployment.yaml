@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: system-ops-server-deployment
+  labels:
+    app: system-ops-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: system-ops-server
+  template:
+    metadata:
+      labels:
+        app: system-ops-server
+    spec:
+      containers:
+      - name: system-ops-server
+        image: system-ops-server:latest # Assuming you'll build and push this image
+        ports:
+        - containerPort: 8002
+        env:
+        - name: PORT
+          value: "8002"
+        - name: REDIS_URL
+          value: "redis://redis-service:6379"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        volumeMounts:
+        - name: docker-sock
+          mountPath: /var/run/docker.sock
+        - name: host-root
+          mountPath: /host
+          readOnly: true
+      volumes:
+      - name: docker-sock
+        hostPath:
+          path: /var/run/docker.sock
+      - name: host-root
+        hostPath:
+          path: /
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: system-ops-server-service
+  labels:
+    app: system-ops-server
+spec:
+  selector:
+    app: system-ops-server
+  ports:
+    - protocol: TCP
+      port: 8002
+      targetPort: 8002
+  type: ClusterIP
