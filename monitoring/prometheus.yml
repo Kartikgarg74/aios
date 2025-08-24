@@ -1,0 +1,43 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'ai-os-main'
+    static_configs:
+      - targets: ['ai-os-main:8000']
+    metrics_path: '/metrics'
+
+  - job_name: 'ai-os-system'
+    static_configs:
+      - targets: ['ai-os-system:8002']
+    metrics_path: '/metrics'
+
+  - job_name: 'ai-os-communication'
+    static_configs:
+      - targets: ['ai-os-communication:8003']
+    metrics_path: '/metrics'
+
+  - job_name: 'ai-os-ide'
+    static_configs:
+      - targets: ['ai-os-ide:8004']
+    metrics_path: '/metrics'
+
+  - job_name: 'ai-os-github'
+    static_configs:
+      - targets: ['ai-os-github:8005']
+    metrics_path: '/metrics'
+
+  - job_name: 'ai-os-voice'
+    static_configs:
+      - targets: ['ai-os-voice:8006']
+    metrics_path: '/metrics'
+
+  - job_name: 'ai-os-frontend'
+    static_configs:
+      - targets: ['ai-os-frontend:1420']
+    metrics_path: '/metrics'
+
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']

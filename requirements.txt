@@ -1,0 +1,37 @@
+# core packages
+fastapi
+uvicorn
+pydantic
+python-multipart
+requests
+aiohttp
+asyncio
+websockets
+
+# ai packages
+transformers
+torch
+huggingface-hub
+tokenizers
+
+# communication packages
+selenium
+webdriver-manager
+twilio
+
+# development packages
+gitpython
+docker
+psutil
+pyautogui
+
+# security packages
+cryptography
+pyjwt
+passlib
+
+# frontend packages
+
+openai
+
+fastapi-limiter==0.1.5

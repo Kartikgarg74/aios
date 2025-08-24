@@ -1,0 +1,64 @@
+# Build stage
+FROM node:22-alpine as builder
+
+# Install dependencies required for Tauri
+RUN apk add --no-cache \
+    git \
+    curl \
+    wget \
+    openssl \
+    musl-dev \
+    gcc \
+    g++ \
+    make \
+    python3 \
+    pkgconfig \
+    dbus \
+    eudev-dev \
+    libx11-dev \
+    libxrandr-dev \
+    libxcursor-dev \
+    libxinerama-dev \
+    libxi-dev \
+    mesa-dev
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package.json yarn.lock* ./ 
+
+# Install dependencies
+RUN yarn install --frozen-lockfile
+
+# Copy source files
+COPY . .
+
+# Build the application
+RUN yarn build
+
+# Production stage
+FROM node:22-alpine
+
+# Install runtime dependencies
+RUN apk add --no-cache \
+    libx11 \
+    libxrandr \
+    libxcursor \
+    libxinerama \
+    libxi \
+    mesa
+
+# Set working directory
+WORKDIR /app
+
+# Copy built files from builder
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json .
+
+# Expose port
+EXPOSE 1420
+
+# Start the application
+CMD ["yarn", "tauri", "serve"]

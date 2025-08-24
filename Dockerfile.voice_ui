@@ -1,0 +1,45 @@
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies for audio and GUI automation
+RUN apt-get update && apt-get install -y \
+    curl \
+    portaudio19-dev \
+    alsa-utils \
+    pulseaudio \
+    xvfb \
+    x11vnc \
+    fluxbox \
+    dbus-x11 \
+    espeak \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Create non-root user
+RUN useradd -m -u 1000 aios && \
+    chown -R aios:aios /app
+USER aios
+
+# Create virtual display
+ENV DISPLAY=:99
+
+# Expose ports
+EXPOSE 8006 5900
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8006/health || exit 1
+
+# Start the server
+CMD ["python", "voice_ui_server.py"]

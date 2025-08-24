@@ -1,0 +1,10 @@
+#!/bin/bash
+echo "Stopping AI Operating System..."
+pkill -f "python3.*main.py"
+pkill -f "python3.*browser_server.py"
+pkill -f "python3.*system_operations_server.py"
+pkill -f "python3.*communication_server.py"
+pkill -f "python3.*ide_integration_server.py"
+pkill -f "python3.*github_actions_server.py"
+pkill -f "python3.*voice_ui_server.py"
+echo "All servers stopped."

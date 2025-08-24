@@ -1,0 +1,252 @@
+version: '3.8'
+
+services:
+  # Redis for message queuing
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - mcp_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Python MCP Server (Port 8000)
+  python-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+    networks:
+      - mcp_network
+    volumes:
+      - ./servers:/app/servers
+      - ./shared:/app/shared
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Browser MCP Server (Port 8001)
+  browser-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.browser
+    ports:
+      - "8001:8001"
+    environment:
+      - PORT=8001
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+    networks:
+      - mcp_network
+    volumes:
+      - ./servers:/app/servers
+      - ./shared:/app/shared
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # System Operations Server (Port 8002)
+  system-ops-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.system
+    ports:
+      - "8002:8002"
+    environment:
+      - PORT=8002
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+    networks:
+      - mcp_network
+    volumes:
+      - ./servers:/app/servers
+      - ./shared:/app/shared
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /:/host:ro
+    privileged: true
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Communication Server (Port 8003)
+  communication-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.communication
+    ports:
+      - "8003:8003"
+    environment:
+      - PORT=8003
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+    networks:
+      - mcp_network
+    volumes:
+      - ./servers:/app/servers
+      - ./shared:/app/shared
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # IDE Integration Server (Port 8004)
+  ide-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.ide
+    ports:
+      - "8004:8004"
+    environment:
+      - PORT=8004
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+    networks:
+      - mcp_network
+    volumes:
+      - ./servers:/app/servers
+      - ./shared:/app/shared
+      - ./workspace:/workspace
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # GitHub Actions Server (Port 8005)
+  github-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.github
+    ports:
+      - "8005:8005"
+    environment:
+      - PORT=8005
+      - REDIS_URL=redis://redis:6379
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+    depends_on:
+      - redis
+    networks:
+      - mcp_network
+    volumes:
+      - ./servers:/app/servers
+      - ./shared:/app/shared
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Voice/UI Server (Port 8006)
+  voice-ui-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.voice
+    ports:
+      - "8006:8006"
+    environment:
+      - PORT=8006
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+    networks:
+      - mcp_network
+    volumes:
+      - ./servers:/app/servers
+      - ./shared:/app/shared
+    devices:
+      - /dev/snd:/dev/snd
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8006/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Central Orchestrator (Port 9000)
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    ports:
+      - "9000:9000"
+    environment:
+      - PORT=9000
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+      - python-server
+      - browser-server
+      - system-ops-server
+      - communication-server
+      - ide-server
+      - github-server
+      - voice-ui-server
+    networks:
+      - mcp_network
+    volumes:
+      - ./servers:/app/servers
+      - ./shared:/app/shared
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend application
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_ORCHESTRATOR_URL=http://orchestrator:9000
+      - REACT_APP_PYTHON_SERVER_URL=http://python-server:8000
+      - REACT_APP_BROWSER_SERVER_URL=http://browser-server:8001
+      - REACT_APP_SYSTEM_SERVER_URL=http://system-ops-server:8002
+      - REACT_APP_COMMUNICATION_SERVER_URL=http://communication-server:8003
+      - REACT_APP_IDE_SERVER_URL=http://ide-server:8004
+      - REACT_APP_GITHUB_SERVER_URL=http://github-server:8005
+      - REACT_APP_VOICE_UI_SERVER_URL=http://voice-ui-server:8006
+    depends_on:
+      - orchestrator
+    networks:
+      - mcp_network
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+networks:
+  mcp_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  redis_data:
+    driver: local
+  workspace:
+    driver: local

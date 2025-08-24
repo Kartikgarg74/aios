@@ -1,0 +1,54 @@
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies for browser automation
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    gnupg \
+    xvfb \
+    x11vnc \
+    fluxbox \
+    dbus-x11 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Chrome
+RUN apt-get update && apt-get install -y chromium && rm -rf /var/lib/apt/lists/*
+
+# Install ChromeDriver
+RUN CHROMIUM_VERSION=$(chromium-browser --version | sed -E 's/.* ([0-9]+(\.[0-9]+){3}).*/\1/') && \
+    CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROMIUM_VERSION%%.*}") && \
+    wget -O /tmp/chromedriver.zip "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip" && \
+    unzip /tmp/chromedriver.zip -d /tmp/ && \
+    mv /tmp/chromedriver /usr/local/bin/chromedriver && \
+    chmod +x /usr/local/bin/chromedriver && \
+    rm /tmp/chromedriver.zip
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Create non-root user
+RUN useradd -m -u 1000 aios && \
+    chown -R aios:aios /app
+USER aios
+
+# Create virtual display
+ENV DISPLAY=:99
+
+# Expose ports
+EXPOSE 8001 5900
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8001/health || exit 1
+
+# Start the server
+CMD ["python", "browser_server.py"]
