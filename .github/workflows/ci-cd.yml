@@ -48,29 +48,29 @@ jobs:
         pwd
         ls -F
     - name: Build and push backend images
-      uses: docker/build-push-action@v5
+      uses: docker/build-push-action@v6
       with:
         context: .
 
         dockerfile: ./Dockerfile
         push: true
-        tags: ${{ secrets.DOCKER_HUB_USERNAME }}/aios-backend:latest
+        tags: ${{ secrets.DOCKER_HUB_USERNAME }}/aios_2gb-backend:latest
 
     - name: Build and push frontend image
-      uses: docker/build-push-action@v5
+      uses: docker/build-push-action@v6
       with:
         context: .
         dockerfile: Dockerfile.frontend
         push: true
-        tags: ${{ secrets.DOCKER_HUB_USERNAME }}/aios-frontend:latest
+        tags: ${{ secrets.DOCKER_HUB_USERNAME }}/aios_2gb-frontend:latest
 
     - name: Build and push marketplace image
-      uses: docker/build-push-action@v5
+      uses: docker/build-push-action@v6
       with:
         context: .
         dockerfile: Dockerfile.marketplace
         push: true
-        tags: ${{ secrets.DOCKER_HUB_USERNAME }}/aios-marketplace:latest
+        tags: ${{ secrets.DOCKER_HUB_USERNAME }}/aios_2gb-marketplace:latest
 
   deploy:
     needs: docker-build
