@@ -6,9 +6,11 @@ import os
 import subprocess
 import tempfile
 import uuid
+import time
 
 app = FastAPI()
-mcp = FastMCP(app, name="ide")
+mcp = FastMCP(name="ide")
+app = mcp
 
 class FileInfo(BaseModel):
     path: str
@@ -132,4 +134,4 @@ async def create_project(project_name: str, template: Optional[str] = None) -> b
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8004)
+    uvicorn.run("ide_server:mcp", host="0.0.0.0", port=8007, reload=True)

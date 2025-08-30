@@ -1,0 +1,9 @@
+selenium
+webdriver-manager
+fastapi
+uvicorn
+pydantic
+httpx
+aiofiles
+python-multipart
+fastmcp

@@ -1,11 +1,97 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Union, Optional
+from typing import Union, Optional, Dict, Any
 
 from fastmcp import Context, FastMCP
-from gpt_oss.tools.simple_browser import SimpleBrowserTool
-from gpt_oss.tools.simple_browser.backend import ExaBackend
+
+# Import necessary libraries for browser automation
+try:
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+except ImportError:
+    pass  # Handle gracefully if selenium is not installed
+
+# Backend implementation for browser automation
+class ExaBackend:
+    def __init__(self, source: str = "web"):
+        self.source = source
+        self.current_page = None
+        self.history = []
+        self.driver = None
+        
+    def initialize_driver(self):
+        if self.driver is None:
+            options = Options()
+            options.add_argument("--headless")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            self.driver = webdriver.Chrome(options=options)
+    
+    def close(self):
+        if self.driver:
+            self.driver.quit()
+            self.driver = None
+
+# Define the SimpleBrowserTool class
+class SimpleBrowserTool:
+    def __init__(self, backend=None):
+        self.backend = backend if backend else ExaBackend()
+        
+    async def search(self, query: str) -> Dict[str, Any]:
+        """Search the web for the given query."""
+        self.backend.initialize_driver()
+        try:
+            self.backend.driver.get(f"https://www.google.com/search?q={query}")
+            WebDriverWait(self.backend.driver, 10).until(
+                EC.presence_of_element_located((By.ID, "search"))
+            )
+            results = self.backend.driver.find_elements(By.CSS_SELECTOR, "div.g")
+            search_results = []
+            for result in results[:5]:  # Limit to top 5 results
+                try:
+                    title = result.find_element(By.CSS_SELECTOR, "h3").text
+                    link = result.find_element(By.CSS_SELECTOR, "a").get_attribute("href")
+                    snippet = result.find_element(By.CSS_SELECTOR, "div.VwiC3b").text
+                    search_results.append({"title": title, "link": link, "snippet": snippet})
+                except Exception:
+                    continue
+            return {"results": search_results}
+        finally:
+            self.backend.close()
+    
+    async def open(self, url: str) -> Dict[str, Any]:
+        """Open a specific URL and return its content."""
+        self.backend.initialize_driver()
+        try:
+            self.backend.driver.get(url)
+            WebDriverWait(self.backend.driver, 10).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+            content = self.backend.driver.find_element(By.TAG_NAME, "body").text
+            title = self.backend.driver.title
+            return {"title": title, "content": content, "url": url}
+        finally:
+            self.backend.close()
+    
+    async def find(self, url: str, selector: str) -> Dict[str, Any]:
+        """Find elements on a page using CSS selector."""
+        self.backend.initialize_driver()
+        try:
+            self.backend.driver.get(url)
+            WebDriverWait(self.backend.driver, 10).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+            elements = self.backend.driver.find_elements(By.CSS_SELECTOR, selector)
+            results = []
+            for element in elements:
+                results.append({"text": element.text, "html": element.get_attribute("outerHTML")})
+            return {"elements": results, "count": len(results)}
+        finally:
+            self.backend.close()
 
 
 @dataclass
@@ -112,3 +198,10 @@ async def find_pattern(ctx: Context, pattern: str, cursor: int = -1) -> str:
         if message.content and hasattr(message.content[0], 'text'):
             messages.append(message.content[0].text)
     return "\n".join(messages)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    # Get the ASGI application from the FastMCP instance
+    app = mcp.http_app
+    uvicorn.run(app, host="0.0.0.0", port=8001)

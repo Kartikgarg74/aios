@@ -741,8 +741,7 @@ async def format_code(file_path: str, formatter: str = "auto") -> Dict[str, Any]
 
 
 # The FastMCP instance itself is the ASGI application
-app = mcp
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("gpt_oss_mcp_server.ide_integration_server:app", host="0.0.0.0", port=8004, reload=True)
+    uvicorn.run("gpt_oss_mcp_server.ide_integration_server:mcp.app", host="0.0.0.0", port=8004, reload=True)

@@ -925,4 +925,4 @@ app = mcp
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("gpt_oss_mcp_server.voice_ui_server:app", host="0.0.0.0", port=8006, reload=True)
+    uvicorn.run("gpt_oss_mcp_server.voice_ui_server:mcp", host="0.0.0.0", port=8006, reload=True)

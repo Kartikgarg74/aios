@@ -8,7 +8,8 @@ import time
 from typing import List, Dict, Optional
 
 app = FastAPI()
-mcp = FastMCP(app, name="system")
+mcp = FastMCP(name="system")
+app.mount("/mcp", mcp)
 
 class SystemInfo(BaseModel):
     hostname: str
@@ -115,6 +116,10 @@ async def shutdown_system(delay: int = 0) -> bool:
     # This would require appropriate permissions
     # Implementation depends on the OS
     return False
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
 
 if __name__ == "__main__":
     import uvicorn

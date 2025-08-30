@@ -17,7 +17,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY . .
+COPY gpt_oss_mcp_server/github_actions_server.py /app/
+COPY requirements-github.txt /app/
+COPY gpt_oss_mcp_server /app/gpt_oss_mcp_server
 
 # Create non-root user
 RUN useradd -m -u 1000 aios && \
@@ -32,4 +34,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8005/health || exit 1
 
 # Start the server
-CMD ["python", "github_actions_server.py"]
+CMD ["python", "/app/github_actions_server.py"]

@@ -7,7 +7,11 @@ import uuid
 import asyncio
 
 app = FastAPI()
-mcp = FastMCP(app, name="communication")
+mcp = FastMCP(name="communication")
+# Use FastAPI for websocket functionality
+# The FastMCP instance will be used for other functionality
+# Mount the FastMCP ASGI application under /mcp so both MCP tools and WebSockets are available
+app.mount("/mcp", mcp)
 
 class Message(BaseModel):
     id: str
@@ -104,6 +108,10 @@ async def mark_as_read(message_id: str) -> bool:
         messages_db[message_id].read = True
         return True
     return False
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
 
 @app.websocket("/ws/{client_id}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str):

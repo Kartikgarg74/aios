@@ -9,7 +9,8 @@ import uuid
 import time
 
 app = FastAPI()
-mcp = FastMCP(app, name="voice_ui")
+mcp = FastMCP(name="voice_ui")
+app.include_router(mcp.router)
 
 class AudioConfig(BaseModel):
     sample_rate: int = 16000

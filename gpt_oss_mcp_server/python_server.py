@@ -1,6 +1,5 @@
-from mcp.server.fastmcp import FastMCP
-from gpt_oss.tools.python_docker.docker_tool import PythonTool
-from openai_harmony import Message, TextContent, Author, Role
+from fastmcp import FastMCP
+from gpt_oss.tools.python_docker.docker_tool import PythonTool, Message, TextContent, Author, Role
 
 # Pass lifespan to server
 mcp = FastMCP(
@@ -31,3 +30,9 @@ async def python(code: str) -> str:
                     content=[TextContent(text=code)])):
         messages.append(message)
     return "\n".join([message.content[0].text for message in messages])
+
+
+# Run the server
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(mcp.http_app, host="0.0.0.0", port=8000)

@@ -651,23 +651,34 @@ jobs:
     - name: Build
       run: npm run build
 
-  {'deploy:' if include_deployment else '# deploy:'}
-    {'needs: test' if include_deployment else '#   needs: test'}
-    {'runs-on: ubuntu-latest' if include_deployment else '#   runs-on: ubuntu-latest'}
-    {'if: github.ref == \"refs/heads/main\"' if include_deployment else '#   if: github.ref == "refs/heads/main"'}
+  {deploy_str}
+    {needs_test_str}
+    {runs_on_str}
+    {if_main_str}
     
-    {'steps:' if include_deployment else '#   steps:'}
-    {'- uses: actions/checkout@v3' if include_deployment else '#   - uses: actions/checkout@v3'}
-    {'- name: Deploy to production' if include_deployment else '#   - name: Deploy to production'}
-      {'run: echo "Deploying to production..."' if include_deployment else '#     run: echo "Deploying to production..."'}
+    {steps_str}
+    {checkout_str}
+    {deploy_name_str}
+      {deploy_run_str}
 """
-        elif project_type == "python":
+        deploy_str = 'deploy:' if include_deployment else '# deploy:'
+        needs_test_str = 'needs: test' if include_deployment else '#   needs: test'
+        runs_on_str = 'runs-on: ubuntu-latest' if include_deployment else '#   runs-on: ubuntu-latest'
+        if_main_str = 'if: github.ref == "refs/heads/main"' if include_deployment else '#   if: github.ref == "refs/heads/main"'
+        steps_str = 'steps:' if include_deployment else '#   steps:'
+        checkout_str = '- uses: actions/checkout@v3' if include_deployment else '#   - uses: actions/checkout@v3'
+        deploy_name_str = '- name: Deploy to production' if include_deployment else '#   - name: Deploy to production'
+        deploy_run_str = 'run: echo "Deploying to production..."' if include_deployment else '#     run: echo "Deploying to production..."'
+
+        if project_type == "python":
             workflow_content = f"""name: {workflow_name}
 
 on:
   push:
     branches: [ main, develop ]
   pull_request:
+
+
     branches: [ main ]
 
 jobs:
@@ -747,6 +758,7 @@ jobs:
       {'run: echo "Deploying to production..."' if include_deployment else '#     run: echo "Deploying to production..."'}
 """
         
+"""
         # Create workflow
         return await create_workflow(
             repo_path=str(repo_path),
@@ -824,4 +836,4 @@ app = mcp
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("gpt_oss_mcp_server.github_actions_server:app", host="0.0.0.0", port=8005, reload=True)
+    uvicorn.run("gpt_oss_mcp_server.github_actions_server:mcp.app", host="0.0.0.0", port=8005, reload=True)
