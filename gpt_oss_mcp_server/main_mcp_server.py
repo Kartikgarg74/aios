@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Union, Optional, AsyncIterator
+from typing import Union, Optional, AsyncIterator, Dict, Any
 
 from mcp.server.fastmcp import Context, FastMCP
 from gpt_oss_mcp_server.browser_server import SimpleBrowserTool
@@ -14,6 +14,7 @@ from gpt_oss_mcp_server.orchestrator_service import SessionInfo
 class AppContext:
     browsers: dict[str, SimpleBrowserTool] = field(default_factory=dict)
     user_sessions: dict[str, dict[str, SessionInfo]] = field(default_factory=dict)
+    conversation_history: dict[str, list[Message]] = field(default_factory=dict)
 
     def create_or_get_browser(self, session_id: str) -> SimpleBrowserTool:
         if session_id not in self.browsers:
@@ -44,6 +45,14 @@ class AppContext:
             del self.user_sessions[user_id][session_id]
             if not self.user_sessions[user_id]:
                 del self.user_sessions[user_id]
+
+    def add_message_to_history(self, session_id: str, message: Message):
+        if session_id not in self.conversation_history:
+            self.conversation_history[session_id] = []
+        self.conversation_history[session_id].append(message)
+
+    def get_conversation_history(self, session_id: str) -> list[Message]:
+        return self.conversation_history.get(session_id, [])
 
 
 @asynccontextmanager
@@ -123,7 +132,7 @@ async def open_link(ctx: Context,
                     view_source: bool = False,
                     source: Optional[str] = None) -> str:
     """Open a link or navigate to a page location"""
-    browser = ctx.request_context.lifespan_context.create_or_get_browser(
+    browser = ctx.request_request.lifespan_context.create_or_get_browser(
         ctx.client_id)
     messages = []
     async for message in browser.open(id=id,

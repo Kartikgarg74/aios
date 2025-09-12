@@ -86,7 +86,9 @@ class ServiceMonitor:
             'auth_success_count': 0,
             'auth_failure_count': 0,
             'permission_denied_count': 0,
-            'suspicious_activity_count': 0
+            'suspicious_activity_count': 0,
+            'total_response_time': 0,
+            'response_count': 0
         }
     
     def record_request(self):
@@ -105,6 +107,11 @@ class ServiceMonitor:
     def record_success(self):
         """Record a successful operation"""
         self.metrics['last_success'] = datetime.utcnow().isoformat()
+
+    def record_response_time(self, response_time):
+        """Record response time for an operation"""
+        self.metrics['total_response_time'] += response_time
+        self.metrics['response_count'] += 1
 
     def record_auth_success(self, username, ip_address):
         """Record a successful authentication attempt"""
@@ -135,5 +142,8 @@ class ServiceMonitor:
             **self.metrics,
             'success_rate': (
                 1 - (self.metrics['error_count'] / self.metrics['request_count'])
-            ) if self.metrics['request_count'] > 0 else 1.0
+            ) if self.metrics['request_count'] > 0 else 1.0,
+            'average_response_time': (
+                self.metrics['total_response_time'] / self.metrics['response_count']
+            ) if self.metrics['response_count'] > 0 else 0.0
         }

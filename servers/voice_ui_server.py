@@ -35,6 +35,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from shared.error_handling import configure_error_handling
+configure_error_handling(app)
+
 # Global variables for voice processing
 voice_queue = queue.Queue()
 recognizer = sr.Recognizer()
@@ -393,23 +396,66 @@ async def stop_screen_record():
         logger.error(f"Error stopping screen recording: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+async def _extract_parameters(command: str, pattern: str) -> Dict[str, Any]:
+    """Extracts parameters from a command string based on a given pattern."""
+    # This is a simplified example. A real implementation would use regex or a more advanced parser.
+    params = {}
+    if "open" in pattern and "application" in pattern:
+        if "open" in command:
+            app_name = command.replace("open", "").replace("application", "").strip()
+            if app_name:
+                params["application_name"] = app_name
+    elif "search for" in pattern:
+        if "search for" in command:
+            query = command.replace("search for", "").strip()
+            if query:
+                params["query"] = query
+    elif "open file" in pattern:
+        if "open file" in command:
+            file_path = command.replace("open file", "").strip()
+            if file_path:
+                params["file_path"] = file_path
+    elif "create new file" in pattern:
+        if "create new file" in command:
+            file_name = command.replace("create new file", "").strip()
+            if file_name:
+                params["file_name"] = file_name
+    elif "run command" in pattern:
+        if "run command" in command:
+            cmd = command.replace("run command", "").strip()
+            if cmd:
+                params["command"] = cmd
+    return params
+
+
 async def parse_voice_command(command: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Parse and process voice commands"""
     command = command.lower().strip()
-    
-    # Command mapping
-    if "dashboard" in command or "home" in command:
-        return {"action": "navigate", "target": "dashboard"}
-    elif "chat" in command or "talk" in command:
-        return {"action": "navigate", "target": "chat"}
-    elif "settings" in command or "config" in command:
-        return {"action": "navigate", "target": "settings"}
-    elif "status" in command or "health" in command:
-        return {"action": "query", "target": "system", "query": "health"}
-    elif "stop" in command or "quit" in command:
-        return {"action": "control", "target": "exit"}
-    else:
-        return {"action": "unknown", "message": "Command not recognized"}
+
+    command_patterns = {
+        "open dashboard": {"action": "navigate", "target": "dashboard"},
+        "start chat": {"action": "navigate", "target": "chat"},
+        "show settings": {"action": "navigate", "target": "settings"},
+        "system status": {"action": "query", "target": "system", "query": "health"},
+        "stop listening": {"action": "control", "target": "voice_off"},
+        "open application": {"action": "open_application"},
+        "close application": {"action": "close_application"},
+        "switch to": {"action": "switch_application"},
+        "take screenshot": {"action": "capture_screen"},
+        "read text": {"action": "text_to_speech"},
+        "search for": {"action": "search_web"},
+        "open file": {"action": "open_file"},
+        "create new file": {"action": "create_file"},
+        "run command": {"action": "run_terminal_command"},
+        "save work": {"action": "save_work"},
+    }
+
+    for pattern, action_data in command_patterns.items():
+        if pattern in command:
+            parameters = await _extract_parameters(command, pattern)
+            return {**action_data, **parameters}
+
+    return {"action": "unknown", "message": "Command not recognized"}
 
 async def process_gui_action(action: str, parameters: Dict[str, Any], target: str) -> Dict[str, Any]:
     """Process GUI actions"""

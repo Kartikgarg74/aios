@@ -20,6 +20,9 @@ import uuid
 import pickle
 from cachetools import TTLCache
 from contextlib import asynccontextmanager
+from shared.auth_middleware import configure_auth_middleware
+from shared.rate_limiter import configure_rate_limiting
+from shared.error_handling import configure_error_handling
 from security.auth import get_current_active_user, create_access_token, verify_password, get_password_hash
 from security.api_key_manager import APIKeyManager
 from fastapi.security import OAuth2PasswordRequestForm, APIKeyHeader
@@ -103,6 +106,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"]
 )
+
+# Configure error handling
+configure_error_handling(app)
 
 # Global variables
 redis_client = None

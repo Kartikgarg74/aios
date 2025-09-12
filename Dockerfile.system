@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
-# Set working directory
 WORKDIR /app
+ENV PYTHONPATH=/app
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -37,4 +37,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8002/health || exit 1
 
 # Start the server
-CMD ["python", "system_server.py"]
+CMD ["python", "servers/system_operations_server/main.py"]

@@ -14,6 +14,10 @@ from datetime import datetime
 import logging
 from pathlib import Path
 import re
+import time
+from utils.cache_utils import cached
+from logging_config import ServiceMonitor
+from plugins.plugin_manager import PluginManager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -79,6 +83,10 @@ class GPTOSSIntegration:
     def __init__(self, config: Optional[GPTOSSConfig] = None):
         self.config = config or GPTOSSConfig()
         self.session: Optional[aiohttp.ClientSession] = None
+        self.monitor = ServiceMonitor("gpt_oss_integration")
+        self.plugin_manager = PluginManager("d:\\aios_2gb\\aios_2gb\\plugins")
+        for plugin_name in self.plugin_manager.list_plugins():
+            self.plugin_manager.load_plugin(plugin_name)
         self.available_models = [
             "microsoft/DialoGPT-large",
             "microsoft/DialoGPT-medium",
@@ -142,7 +150,7 @@ class GPTOSSIntegration:
             messages.append({"role": "system", "content": context})
         messages.append({"role": "user", "content": prompt})
         
-        start_time = datetime.now()
+        start_time = time.time()
         
         for attempt in range(self.config.retry_attempts):
             try:
@@ -155,10 +163,14 @@ class GPTOSSIntegration:
                     timeout=self.config.timeout
                 )
                 
-                response_time = (datetime.now() - start_time).total_seconds()
+                response_time = time.time() - start_time
                 generated_text = completion.choices[0].message.content.strip()
                 tokens_used = completion.usage.total_tokens if completion.usage else 0
                 
+                self.monitor.record_response_time(response_time)
+                self.monitor.record_request()
+                self.monitor.record_success()
+
                 return AIResponse(
                     text=generated_text,
                     confidence=0.85,  # Placeholder confidence
@@ -170,6 +182,7 @@ class GPTOSSIntegration:
             
             except Exception as e:
                 logger.error(f"Error on attempt {attempt + 1}: {str(e)}")
+                self.monitor.record_error(e)
                 if attempt == self.config.retry_attempts - 1:
                     raise
                 await asyncio.sleep(5 * (attempt + 1)) # Wait before retrying
@@ -289,8 +302,25 @@ class GPTOSSIntegration:
         
         if current_suggestion:
             suggestions.append(current_suggestion.strip())
-        
-        return suggestions if suggestions else ["Review the desired functionality and implement step by step"]
+            
+        return suggestions
+
+    async def execute_plugin(self, plugin_name: str, *args, **kwargs):
+        """Execute a loaded plugin by name."""
+        try:
+            # Convert camel case plugin name to snake case file name
+            import re
+            snake_case_plugin_name = re.sub(r'(?<!^)(?=[A-Z])', '_', plugin_name).lower()
+            plugin = self.plugin_manager.get_plugin(snake_case_plugin_name)
+            if plugin:
+                logger.info(f"Executing plugin: {plugin_name}")
+                return plugin.execute(*args, **kwargs)
+            else:
+                logger.warning(f"Plugin '{plugin_name}' not found.")
+                return None
+        except Exception as e:
+            logger.error(f"Error executing plugin '{plugin_name}': {e}")
+            raise
     
     async def debug_code(self, error_message: str, code_context: str) -> Dict[str, Any]:
         """Debug code using AI analysis"""
@@ -319,7 +349,29 @@ class GPTOSSIntegration:
             "confidence": 0.8
         }
     
-    async def optimize_query(self, query: str, context: Dict[str, Any] = None) -> str:
+    async def recognize_intent(self, query: str, context: Dict[str, Any] = None) -> Dict[str, str]:
+        """Recognize the intent of the user's query and extract relevant entities."""
+        prompt = f"""
+        Analyze the following user query and determine its primary intent. 
+        Also, extract any relevant entities. 
+        
+        Query: {query}
+        Context: {json.dumps(context, indent=2) if context else "No additional context"}
+
+        Respond with a JSON object containing 'intent' (e.g., 'code_generation', 'information_retrieval', 'file_operation', 'system_control', 'unknown') and 'entities' (a dictionary of key-value pairs).
+        Example: {{"intent": "code_generation", "entities": {{"language": "python", "task": "create a function"}}}}
+        """
+        
+        response = await self.generate_text(prompt, max_tokens=300, temperature=0.3)
+        try:
+            intent_data = json.loads(response.text.strip())
+            return intent_data
+        except json.JSONDecodeError:
+            self.logger.error(f"Failed to decode intent recognition response: {response.text}")
+            return {"intent": "unknown", "entities": {}}
+
+    @cached(ttl=3600)  # Cache results for 1 hour
+    async def optimize_query(self, query: str, context: Optional[str] = None) -> str:
         """Optimize user queries for better AI understanding"""
         prompt = f"""
         Optimize the following query for better AI understanding and execution:
@@ -329,9 +381,84 @@ class GPTOSSIntegration:
         Provide an optimized version that is clearer, more specific, and includes relevant context.
         """
         
-        response = await self.generate_text(prompt, max_tokens=200, temperature=0.2)
-        return response.text.strip()
-    
+        messages = []
+        if context:
+            messages.append({"role": "system", "content": context})
+        messages.append({"role": "user", "content": prompt})
+
+        start_time = time.time()
+        self.monitor.record_request()
+        try:
+            response = await self.session.post(
+                f"{self.config.base_url}/{self.config.model_name}",
+                json={
+                    "inputs": messages,
+                    "parameters": {
+                        "max_new_tokens": self.config.max_tokens,
+                        "temperature": self.config.temperature,
+                        "top_p": self.config.top_p
+                    }
+                }
+            )
+            response.raise_for_status()
+            result = await response.json()
+            
+            optimized_query = result[0]["generated_text"].strip()
+            
+            end_time = time.time()
+            response_time = end_time - start_time
+            self.monitor.record_response_time(response_time)
+            self.monitor.record_success()
+            return optimized_query
+        except aiohttp.ClientError as e:
+            logger.error(f"HTTP error during query optimization: {e}")
+            self.monitor.record_error(e)
+            raise
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during query optimization: {e}")
+            self.monitor.record_error(e)
+            raise
+
+    async def generate_code(
+        self, 
+        current_code: str, 
+        desired_functionality: str,
+        language: str = "python"
+    ) -> List[str]:
+        """Get code suggestions for implementing functionality"""
+        prompt = f"""
+        Current {language} code:
+        ```{language}
+        {current_code}
+        ```
+
+        Desired functionality: {desired_functionality}
+
+        Provide 3-5 specific code suggestions to implement this functionality. 
+        Focus on practical, working code examples.
+        """
+        
+        response = await self.generate_text(prompt, max_tokens=600, temperature=0.5)
+        
+        # Parse suggestions from response
+        suggestions = []
+        lines = response.text.split('\n')
+        current_suggestion = ""
+        
+        for line in lines:
+            line = line.strip()
+            if line.startswith(('1.', '2.', '3.', '4.', '5.')) or line.startswith(('-', '*')):
+                if current_suggestion:
+                    suggestions.append(current_suggestion.strip())
+                current_suggestion = line
+            elif line:
+                current_suggestion += " " + line
+        
+        if current_suggestion:
+            suggestions.append(current_suggestion.strip())
+        
+        return suggestions if suggestions else ["Review the desired functionality and implement step by step"]
+
     async def get_available_models(self) -> List[str]:
         """Get list of available GPT-OSS models"""
         return self.available_models
@@ -351,85 +478,137 @@ class QueryStackingSystem:
     def __init__(self, gpt_integration: GPTOSSIntegration):
         self.gpt = gpt_integration
         self.active_queries: Dict[str, Dict[str, Any]] = {}
+        self.monitor = ServiceMonitor("query_stacking_system")
     
     async def create_query_stack(self, 
                                main_query: str, 
                                context: Dict[str, Any] = None) -> str:
         """Create a query stack for complex operations"""
-        stack_id = f"query_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{hash(main_query) % 10000}"
-        
-        # Generate task plan
-        task_plan = await self.gpt.create_task_plan(main_query)
-        
-        self.active_queries[stack_id] = {
-            "original_query": main_query,
-            "context": context or {},
-            "task_plan": task_plan,
-            "current_step": 0,
-            "completed_steps": [],
-            "results": {},
-            "status": "active",
-            "created_at": datetime.now().isoformat()
-        }
-        
-        return stack_id
+        start_time = time.time()
+        self.monitor.record_request()
+        try:
+            stack_id = f"query_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{hash(main_query) % 10000}"
+            
+            # Generate task plan
+            task_plan = await self.gpt.create_task_plan(main_query)
+            
+            self.active_queries[stack_id] = {
+                "original_query": main_query,
+                "context": context or {},
+                "task_plan": task_plan,
+                "current_step": 0,
+                "completed_steps": [],
+                "results": {},
+                "status": "active",
+                "created_at": datetime.now().isoformat()
+            }
+            
+            end_time = time.time()
+            response_time = end_time - start_time
+            self.monitor.record_response_time(response_time)
+            self.monitor.record_success()
+            return stack_id
+        except Exception as e:
+            logger.error(f"Error creating query stack: {e}")
+            self.monitor.record_error(e)
+            raise
     
     async def execute_next_step(self, stack_id: str) -> Dict[str, Any]:
         """Execute the next step in the query stack"""
-        if stack_id not in self.active_queries:
-            return {"error": "Query stack not found"}
-        
-        stack = self.active_queries[stack_id]
-        task_plan = stack["task_plan"]
-        
-        if stack["current_step"] >= len(task_plan.steps):
-            stack["status"] = "completed"
-            return {"status": "completed", "results": stack["results"]}
-        
-        current_step = task_plan.steps[stack["current_step"]]
-        
-        # Execute step (this would integrate with MCP servers)
-        step_result = {
-            "step": current_step,
-            "executed_at": datetime.now().isoformat(),
-            "result": "Step executed successfully"
-        }
-        
-        stack["completed_steps"].append(current_step)
-        stack["results"][f"step_{stack['current_step']}"] = step_result
-        stack["current_step"] += 1
-        
-        return {
-            "step_executed": current_step,
-            "next_step": stack["current_step"],
-            "status": "in_progress"
-        }
+        start_time = time.time()
+        self.monitor.record_request()
+        try:
+            if stack_id not in self.active_queries:
+                self.monitor.record_error(ValueError("Query stack not found"))
+                return {"error": "Query stack not found"}
+            
+            stack = self.active_queries[stack_id]
+            task_plan = stack["task_plan"]
+            
+            if stack["current_step"] >= len(task_plan.steps):
+                stack["status"] = "completed"
+                end_time = time.time()
+                response_time = end_time - start_time
+                self.monitor.record_response_time(response_time)
+                self.monitor.record_success()
+                return {"status": "completed", "results": stack["results"]}
+            
+            current_step = task_plan.steps[stack["current_step"]]
+            
+            # Execute step (this would integrate with MCP servers)
+            step_result = {
+                "step": current_step,
+                "executed_at": datetime.now().isoformat(),
+                "result": "Step executed successfully"
+            }
+            
+            stack["completed_steps"].append(current_step)
+            stack["results"][f"step_{stack['current_step']}"] = step_result
+            stack["current_step"] += 1
+            
+            end_time = time.time()
+            response_time = end_time - start_time
+            self.monitor.record_response_time(response_time)
+            self.monitor.record_success()
+            return {
+                "step_executed": current_step,
+                "next_step": stack["current_step"],
+                "status": "in_progress"
+            }
+        except Exception as e:
+            logger.error(f"Error executing next step in query stack: {e}")
+            self.monitor.record_error(e)
+            raise
     
     async def get_query_status(self, stack_id: str) -> Dict[str, Any]:
         """Get status of a query stack"""
-        if stack_id not in self.active_queries:
-            return {"error": "Query stack not found"}
-        
-        stack = self.active_queries[stack_id]
-        task_plan = stack["task_plan"]
-        
-        return {
-            "stack_id": stack_id,
-            "original_query": stack["original_query"],
-            "status": stack["status"],
-            "current_step": stack["current_step"],
-            "total_steps": len(task_plan.steps),
-            "progress": f"{stack['current_step']}/{len(task_plan.steps)}",
-            "estimated_time_remaining": task_plan.estimated_time,
-            "results": stack["results"]
-        }
+        start_time = time.time()
+        self.monitor.record_request()
+        try:
+            if stack_id not in self.active_queries:
+                self.monitor.record_error(ValueError("Query stack not found"))
+                return {"error": "Query stack not found"}
+            
+            stack = self.active_queries[stack_id]
+            task_plan = stack["task_plan"]
+            
+            end_time = time.time()
+            response_time = end_time - start_time
+            self.monitor.record_response_time(response_time)
+            self.monitor.record_success()
+            return {
+                "stack_id": stack_id,
+                "original_query": stack["original_query"],
+                "status": stack["status"],
+                "current_step": stack["current_step"],
+                "total_steps": len(task_plan.steps),
+                "progress": f"{stack['current_step']}/{len(task_plan.steps)}",
+                "estimated_time_remaining": task_plan.estimated_time,
+                "results": stack["results"]
+            }
+        except Exception as e:
+            logger.error(f"Error getting query status: {e}")
+            self.monitor.record_error(e)
+            raise
     
     async def cancel_query(self, stack_id: str) -> bool:
         """Cancel a query stack"""
-        if stack_id in self.active_queries:
-            self.active_queries[stack_id]["status"] = "cancelled"
-            return True
-        return False
+        start_time = time.time()
+        self.monitor.record_request()
+        try:
+            if stack_id in self.active_queries:
+                self.active_queries[stack_id]["status"] = "cancelled"
+                end_time = time.time()
+                response_time = end_time - start_time
+                self.monitor.record_response_time(response_time)
+                self.monitor.record_success()
+                return True
+            self.monitor.record_error(ValueError("Query stack not found"))
+            return False
+        except Exception as e:
+            logger.error(f"Error canceling query: {e}")
+            self.monitor.record_error(e)
+            raise
 
 
 # Global instances for easy access

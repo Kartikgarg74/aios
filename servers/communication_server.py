@@ -26,10 +26,13 @@ from twilio.rest import Client
 
 from logging_config import setup_logger, ServiceMonitor
 
+from mcp.server import FastMCP
+
 # Configure logging
 logger = setup_logger("communication_server")
 
 app = FastAPI(title="Communication Server", version="1.0.0")
+mcp = FastMCP()
 
 # Initialize ServiceMonitor
 monitor = ServiceMonitor("communication_server")
@@ -151,7 +154,7 @@ async def send_message(message: Message):
         logger.error(f"Failed to send message: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/phone/send_sms")
+@mcp.tool()
 async def send_sms(account_sid: str, auth_token: str, from_number: str, to_number: str, message_body: str):
     """Send an SMS message using Twilio."""
     monitor.record_request()
@@ -170,7 +173,7 @@ async def send_sms(account_sid: str, auth_token: str, from_number: str, to_numbe
         logger.error(f"Failed to send SMS: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/phone/make_call")
+@mcp.tool()
 async def make_call(account_sid: str, auth_token: str, from_number: str, to_number: str, twiml_url: str):
     """Make a phone call using Twilio."""
     monitor.record_request()
@@ -380,7 +383,7 @@ async def acknowledge_message(ack: MessageAck):
         logger.info(f"Message {ack.message_id} acknowledged and removed from pending.")
     return {"status": "acknowledged", "message_id": ack.message_id}
 
-@app.post("/whatsapp/send_message")
+@mcp.tool()
 async def send_whatsapp_message(recipient: str, message: str):
     """Send a WhatsApp message using Puppeteer."""
     browser = None
@@ -412,7 +415,7 @@ async def send_whatsapp_message(recipient: str, message: str):
         if browser:
             await browser.close()
 
-@app.post("/email/send")
+@mcp.tool()
 async def send_email(sender_email: str, sender_password: str, recipient_email: str, subject: str, body: str):
     """Send an email via SMTP."""
     try:
@@ -431,7 +434,7 @@ async def send_email(sender_email: str, sender_password: str, recipient_email: s
         logger.error(f"Failed to send email: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/email/inbox")
+@mcp.tool()
 async def get_inbox(email_address: str, password: str, num_emails: int = 5):
     """Retrieve emails from IMAP inbox."""
     try:
@@ -473,6 +476,8 @@ async def get_inbox(email_address: str, password: str, num_emails: int = 5):
     except Exception as e:
         logger.error(f"Failed to retrieve emails: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+app.mount("/mcp", mcp)
 
 if __name__ == "__main__":
     import uvicorn

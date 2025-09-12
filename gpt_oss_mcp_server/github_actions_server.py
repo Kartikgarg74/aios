@@ -259,7 +259,7 @@ async def create_workflow(
         
         # Create workflow content if not provided
         if not content:
-            content = f"""name: {workflow_name}
+            content = f'''name: {workflow_name}
 
 on:
   {trigger}:
@@ -285,7 +285,7 @@ jobs:
     
     - name: Build
       run: npm run build
-"""
+'''
         
         with open(workflow_path, 'w', encoding='utf-8') as f:
             f.write(content)
@@ -651,34 +651,25 @@ jobs:
     - name: Build
       run: npm run build
 
-  {deploy_str}
-    {needs_test_str}
-    {runs_on_str}
-    {if_main_str}
+{'  deploy:' if include_deployment else '#  deploy:'}
+{'    needs: test' if include_deployment else '#    needs: test'}
+{'    runs-on: ubuntu-latest' if include_deployment else '#    runs-on: ubuntu-latest'}
+{'    if: github.ref == "refs/heads/main"' if include_deployment else '#    if: github.ref == "refs/heads/main"'}
     
-    {steps_str}
-    {checkout_str}
-    {deploy_name_str}
-      {deploy_run_str}
+{'    steps:' if include_deployment else '#    steps:'}
+{'    - uses: actions/checkout@v3' if include_deployment else '#    - uses: actions/checkout@v3'}
+    
+{'    - name: Deploy to production' if include_deployment else '#    - name: Deploy to production'}
+{'      run: echo "Deploying to production..."' if include_deployment else '#      run: echo "Deploying to production..."'}
 """
-        deploy_str = 'deploy:' if include_deployment else '# deploy:'
-        needs_test_str = 'needs: test' if include_deployment else '#   needs: test'
-        runs_on_str = 'runs-on: ubuntu-latest' if include_deployment else '#   runs-on: ubuntu-latest'
-        if_main_str = 'if: github.ref == "refs/heads/main"' if include_deployment else '#   if: github.ref == "refs/heads/main"'
-        steps_str = 'steps:' if include_deployment else '#   steps:'
-        checkout_str = '- uses: actions/checkout@v3' if include_deployment else '#   - uses: actions/checkout@v3'
-        deploy_name_str = '- name: Deploy to production' if include_deployment else '#   - name: Deploy to production'
-        deploy_run_str = 'run: echo "Deploying to production..."' if include_deployment else '#     run: echo "Deploying to production..."'
 
-        if project_type == "python":
+        elif project_type == "python":
             workflow_content = f"""name: {workflow_name}
 
 on:
   push:
     branches: [ main, develop ]
   pull_request:
-
-
     branches: [ main ]
 
 jobs:
@@ -687,7 +678,7 @@ jobs:
     
     strategy:
       matrix:
-        python-version: [3.8, 3.9, "3.10", "3.11"]
+        python-version: [[3.8, 3.9, "3.10", "3.11"]]
     
     steps:
     - uses: actions/checkout@v3
@@ -711,64 +702,36 @@ jobs:
       with:
         file: ./coverage.xml
 
-  {'deploy:' if include_deployment else '# deploy:'}
-    {'needs: test' if include_deployment else '#   needs: test'}
-    {'runs-on: ubuntu-latest' if include_deployment else '#   runs-on: ubuntu-latest'}
-    {'if: github.ref == \"refs/heads/main\"' if include_deployment else '#   if: github.ref == "refs/heads/main"'}
+{{'  deploy:' if include_deployment else '#  deploy:'}}
+{{'    needs: test' if include_deployment else '#    needs: test'}}
+{{'    runs-on: ubuntu-latest' if include_deployment else '#    runs-on: ubuntu-latest'}}
+{{'    if: github.ref == "refs/heads/main"' if include_deployment else '#    if: github.ref == "refs/heads/main"'}}
     
-    {'steps:' if include_deployment else '#   steps:'}
-    {'- uses: actions/checkout@v3' if include_deployment else '#   - uses: actions/checkout@v3'}
-    {'- name: Deploy to production' if include_deployment else '#   - name: Deploy to production'}
-      {'run: echo "Deploying to production..."' if include_deployment else '#     run: echo "Deploying to production..."'}
+{{'    steps:' if include_deployment else '#    steps:'}}
+{{'    - uses: actions/checkout@v3' if include_deployment else '#    - uses: actions/checkout@v3'}}
+    
+{{'    - name: Deploy to production' if include_deployment else '#    - name: Deploy to production'}}
+{{'      run: echo "Deploying to production..."' if include_deployment else '#      run: echo "Deploying to production..."'}}
 """
-        else:
-            workflow_content = f"""name: {workflow_name}
 
-on:
-  push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main ]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Setup environment
-      run: |
-        echo "Setting up environment..."
-        echo "Project type: {project_type}"
-    
-    - name: Build
-      run: |
-        echo "Building project..."
-        echo "This is a placeholder for {project_type} build"
-
-  {'deploy:' if include_deployment else '# deploy:'}
-    {'needs: build' if include_deployment else '#   needs: build'}
-    {'runs-on: ubuntu-latest' if include_deployment else '#   runs-on: ubuntu-latest'}
-    {'if: github.ref == \"refs/heads/main\"' if include_deployment else '#   if: github.ref == "refs/heads/main"'}
-    
-    {'steps:' if include_deployment else '#   steps:'}
-    {'- uses: actions/checkout@v3' if include_deployment else '#   - uses: actions/checkout@v3'}
-    {'- name: Deploy to production' if include_deployment else '#   - name: Deploy to production'}
-      {'run: echo "Deploying to production..."' if include_deployment else '#     run: echo "Deploying to production..."'}
-"""
+        # Create workflow file
+        workflow_file = repo_path / ".github" / "workflows" / f"ci-cd-{project_type}.yml"
+        workflow_file.parent.mkdir(parents=True, exist_ok=True)
         
-"""
-        # Create workflow
-        return await create_workflow(
-            repo_path=str(repo_path),
-            workflow_name=workflow_name,
-            content=workflow_content
-        )
+        with open(workflow_file, "w") as f:
+            f.write(workflow_content)
         
+        return {
+            "status": "success",
+            "message": f"CI/CD pipeline set up for {project_type} project",
+            "workflow_file": str(workflow_file),
+            "project_type": project_type
+        }
     except Exception as e:
-        return {"error": f"Failed to setup CI/CD: {str(e)}"}
-
+        return {
+            "status": "error",
+            "message": f"Failed to set up CI/CD pipeline: {str(e)}"
+        }
 
 @mcp.tool(
     name="get_repository_info",
@@ -832,7 +795,8 @@ async def get_repository_info(repo_path: str = ".") -> Dict[str, Any]:
 
 
 # The FastMCP instance itself is the ASGI application
-app = mcp
+# Export the FastMCP app for ASGI servers to use
+mcp.app = mcp
 
 if __name__ == "__main__":
     import uvicorn

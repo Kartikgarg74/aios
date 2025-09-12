@@ -9,7 +9,10 @@ import tempfile
 import time
 
 app = FastAPI()
-mcp = FastMCP(app, name="github")
+mcp = FastMCP(name="github")
+
+# Mount the FastMCP ASGI application to the FastAPI app
+app.mount("/mcp", mcp)
 
 class Repository(BaseModel):
     name: str
@@ -153,6 +156,9 @@ async def create_repository(name: str, description: str, private: bool = False) 
     )
     mock_repos.append(new_repo)
     return new_repo
+
+# The FastAPI app is the ASGI application
+app.app = app
 
 if __name__ == "__main__":
     import uvicorn

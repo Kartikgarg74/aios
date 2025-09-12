@@ -1,12 +1,14 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useContext } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { invoke } from '@tauri-apps/api/tauri';
-import { Activity, Cpu, HardDrive, MessageSquare, GitBranch, Phone, Settings, Zap } from 'lucide-react';
+import { mainApi, systemApi } from '../services/api';
+import { Activity, Cpu, HardDrive, MessageSquare, GitBranch, Phone, Settings, Zap, RefreshCw } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Progress } from '../components/ui/progress';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { Loading } from '../components/ui/loading';
+import { useAppContext } from '../context/AppContext';
 
 interface SystemInfo {
   hostname: string;
@@ -29,32 +31,70 @@ interface PerformanceMetric {
 
 const Dashboard: React.FC = () => {
   const [performanceChartData, setPerformanceChartData] = useState<PerformanceMetric[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  
+  // Get global app context for error handling
+  const { error, clearError, refreshSystemStatus } = useAppContext();
+  const { systemStatus } = useContext(AppContext);
 
-  const { data: activeQueries } = useQuery({
+  const { data: activeQueries, isLoading: queriesLoading, refetch: refetchQueries } = useQuery({
     queryKey: ['active-queries'],
-    queryFn: () => invoke<number>('get_active_ai_queries'),
+    queryFn: () => mainApi.get<number>('/ai/active-queries'),
+    select: (response) => response.data,
     refetchInterval: 5000,
+    retry: 2,
+    onError: (err) => {
+      console.error('Failed to fetch active queries:', err);
+    }
   });
 
-  const { data: systemInfo } = useQuery({
+  const { data: systemInfo, isLoading: systemInfoLoading, refetch: refetchSystemInfo } = useQuery({
     queryKey: ['system-info'],
-    queryFn: () => invoke<SystemInfo>('get_system_info'),
+    queryFn: () => systemApi.get<SystemInfo>('/info'),
+    select: (response) => response.data,
     refetchInterval: 5000,
+    retry: 2,
+    onError: (err) => {
+      console.error('Failed to fetch system info:', err);
+    }
   });
 
-  const { data: mcpStatus } = useQuery({
+  const { data: mcpStatus, isLoading: mcpStatusLoading, refetch: refetchMcpStatus } = useQuery({
     queryKey: ['mcp-status'],
-    queryFn: () => invoke<MCPServerStatus>('health_check'),
+    queryFn: () => mainApi.get<MCPServerStatus>('/health'),
+    select: (response) => response.data,
     refetchInterval: 10000,
+    retry: 2,
+    onError: (err) => {
+      console.error('Failed to fetch MCP status:', err);
+    }
   });
 
-  const { data: currentPerformanceData } = useQuery({
+  const { data: currentPerformanceData, isLoading: performanceLoading, refetch: refetchPerformance } = useQuery({
     queryKey: ['performance-data'],
-    queryFn: () => invoke<{ cpu_usage: number; memory_usage: number }>('get_performance_data'),
+    queryFn: () => systemApi.get<{ cpu_usage: number; memory_usage: number }>('/performance'),
+    select: (response) => response.data,
     refetchInterval: 1000,
+    retry: 2,
+    onError: (err) => {
+      console.error('Failed to fetch performance data:', err);
+    }
   });
+
+  // Function to refresh all data
+  const refreshAllData = () => {
+    refetchQueries();
+    refetchSystemInfo();
+    refetchMcpStatus();
+    refetchPerformance();
+    refreshSystemStatus();
+    clearError(); // Clear any existing errors
+  };
 
   useEffect(() => {
+    // Update loading state based on all data fetching states
+    setIsLoading(queriesLoading || systemInfoLoading || mcpStatusLoading || performanceLoading);
+    
     if (currentPerformanceData) {
       setPerformanceChartData((prevData) => {
         const newEntry = {
@@ -66,7 +106,7 @@ const Dashboard: React.FC = () => {
         return [...prevData, newEntry].slice(-20);
       });
     }
-  }, [currentPerformanceData]);
+  }, [currentPerformanceData, queriesLoading, systemInfoLoading, mcpStatusLoading, performanceLoading]);
 
   const memoryUsage = systemInfo ? (systemInfo.memory_used / systemInfo.memory_total) * 100 : 0;
   const uptimeHours = systemInfo ? Math.floor(systemInfo.uptime / 3600) : 0;
@@ -80,130 +120,173 @@ const Dashboard: React.FC = () => {
 
 
   return (
-    <div className="p-6 space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold">AI Operating System Dashboard</h1>
-        <p className="text-muted-foreground">Manage your AI-powered development environment</p>
+    <div className="p-4 md:p-6 space-y-4 md:space-y-6">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-2">
+        <div className="space-y-2 mb-4 md:mb-0">
+          <h1 className="text-2xl md:text-3xl font-bold">AI Operating System Dashboard</h1>
+          <p className="text-muted-foreground">Manage your AI-powered development environment</p>
+        </div>
+        
+        <Button 
+          onClick={refreshAllData} 
+          disabled={isLoading}
+          className="flex items-center gap-2"
+          aria-label="Refresh dashboard data"
+        >
+          <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+          Refresh
+        </Button>
       </div>
 
-      {/* System Overview */}
-      <div className="grid gap-4 md:grid-cols-4">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">System Status</CardTitle>
-            <Activity className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{systemInfo?.platform || 'Loading...'}</div>
-            <p className="text-xs text-muted-foreground">{systemInfo?.hostname}</p>
-          </CardContent>
-        </Card>
+      {isLoading && (
+        <div className="flex justify-center items-center py-8">
+          <Loading text="Loading dashboard data..." centered />
+        </div>
+      )}
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">CPU Cores</CardTitle>
-            <Cpu className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{systemInfo?.cpu_count || 0}</div>
-            <p className="text-xs text-muted-foreground">Processing units</p>
-          </CardContent>
-        </Card>
+      {!isLoading && (
+        <>
+          {/* System Overview */}
+          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 md:grid-cols-4">
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">System Status</CardTitle>
+                <Activity className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">{systemInfo?.platform || 'Loading...'}</div>
+                <p className="text-xs text-muted-foreground">{systemInfo?.hostname}</p>
+              </CardContent>
+            </Card>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Memory Usage</CardTitle>
-            <HardDrive className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{memoryUsage.toFixed(1)}%</div>
-            <Progress value={memoryUsage} className="h-2" />
-          </CardContent>
-        </Card>
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">CPU Usage</CardTitle>
+                <Cpu className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">{currentPerformanceData?.cpu_usage.toFixed(1)}%</div>
+                <p className="text-xs text-muted-foreground">{systemInfo?.cpu_count} Cores</p>
+                <Progress 
+                  className="mt-2" 
+                  value={currentPerformanceData?.cpu_usage || 0} 
+                  aria-label={`CPU usage ${currentPerformanceData?.cpu_usage.toFixed(1)}%`}
+                />
+              </CardContent>
+            </Card>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Uptime</CardTitle>
-            <Zap className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{uptimeHours}h</div>
-            <p className="text-xs text-muted-foreground">System running</p>
-          </CardContent>
-        </Card>
-      </div>
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Memory Usage</CardTitle>
+                <HardDrive className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">{memoryUsage.toFixed(1)}%</div>
+                <p className="text-xs text-muted-foreground">
+                  {(systemInfo?.memory_used / 1024 / 1024 / 1024).toFixed(2)} GB / 
+                  {(systemInfo?.memory_total / 1024 / 1024 / 1024).toFixed(2)} GB
+                </p>
+                <Progress 
+                  className="mt-2" 
+                  value={memoryUsage} 
+                  aria-label={`Memory usage ${memoryUsage.toFixed(1)}%`}
+                />
+              </CardContent>
+            </Card>
 
-      {/* MCP Servers Status */}
-      <Card>
-        <CardHeader>
-          <CardTitle>MCP Servers Status</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid gap-4 md:grid-cols-4">
-            {Object.entries(mcpStatus || {}).map(([server, status]) => (
-              <div key={server} className="flex items-center justify-between">
-                <span className="text-sm font-medium capitalize">{server}</span>
-                <Badge variant={status ? 'default' : 'destructive'}>
-                  {status ? 'Online' : 'Offline'}
-                </Badge>
-              </div>
-            ))}
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Uptime</CardTitle>
+                <Zap className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">{uptimeHours} hours</div>
+                <p className="text-xs text-muted-foreground">
+                  {Math.floor((systemInfo?.uptime || 0) % 3600 / 60)} minutes
+                </p>
+              </CardContent>
+            </Card>
           </div>
-        </CardContent>
-      </Card>
 
-      {/* Quick Actions */}
-      <div className="grid gap-4 md:grid-cols-4">
-        {quickActions.map((action) => (
-          <Card key={action.label} className="hover:shadow-lg transition-shadow">
-            <CardContent className="p-6">
-              <div className={`w-12 h-12 ${action.color} rounded-lg flex items-center justify-center mb-4`}>
-                <action.icon className="h-6 w-6 text-white" />
+          {/* MCP Server Status */}
+          <Card>
+            <CardHeader>
+              <CardTitle>MCP Server Status</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                {mcpStatus && Object.entries(mcpStatus).map(([server, status]) => (
+                  <div key={server} className="flex items-center space-x-2">
+                    <div 
+                      className={`w-3 h-3 rounded-full ${status ? 'bg-green-500' : 'bg-red-500'}`}
+                      aria-hidden="true"
+                    ></div>
+                    <span className="text-sm">{server}</span>
+                    <span className="sr-only">{status ? 'Online' : 'Offline'}</span>
+                  </div>
+                ))}
               </div>
-              <h3 className="font-semibold mb-2">{action.label}</h3>
-              <Button 
-                variant="ghost" 
-                className="w-full"
-                onClick={() => window.location.href = action.path}
-              >
-                Open
-              </Button>
             </CardContent>
           </Card>
-        ))}
-      </div>
 
-      {/* Performance Chart */}
-      <Card>
-        <CardHeader>
-          <CardTitle>System Performance</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={performanceChartData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="time" />
-              <YAxis />
-              <Tooltip />
-              <Line type="monotone" dataKey="cpu" stroke="#8884d8" name="CPU %" />
-              <Line type="monotone" dataKey="memory" stroke="#82ca9d" name="Memory %" />
-            </LineChart>
-          </ResponsiveContainer>
-        </CardContent>
-      </Card>
-
-      {/* Active Queries */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Active AI Queries</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-muted-foreground">Processing tasks</span>
-            <Badge variant="outline">{activeQueries || 0}</Badge>
+          {/* Quick Actions */}
+          <div className="grid gap-4 grid-cols-2 sm:grid-cols-4">
+            {quickActions.map((action) => (
+              <Card key={action.label} className="overflow-hidden">
+                <div className={`${action.color} h-1`} aria-hidden="true"></div>
+                <CardContent className="pt-6">
+                  <div className="flex flex-col items-center text-center space-y-2">
+                    <action.icon className="h-8 w-8 mb-2" aria-hidden="true" />
+                    <h3 className="font-medium">{action.label}</h3>
+                    <Button 
+                      variant="ghost" 
+                      className="w-full"
+                      onClick={() => window.location.href = action.path}
+                      aria-label={`Open ${action.label}`}
+                    >
+                      Open
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
           </div>
-        </CardContent>
-      </Card>
+
+          {/* Performance Chart */}
+          <Card>
+            <CardHeader>
+              <CardTitle>System Performance</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="h-[300px] w-full" aria-label="System performance chart showing CPU and memory usage over time">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={performanceChartData}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="time" />
+                    <YAxis />
+                    <Tooltip />
+                    <Line type="monotone" dataKey="cpu" stroke="#8884d8" name="CPU %" />
+                    <Line type="monotone" dataKey="memory" stroke="#82ca9d" name="Memory %" />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Active Queries */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Active AI Queries</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-muted-foreground">Processing tasks</span>
+                <Badge variant="outline">{activeQueries || 0}</Badge>
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      )}
     </div>
   );
 };

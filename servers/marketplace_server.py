@@ -4,10 +4,18 @@ import uvicorn
 import os
 import logging
 
+from mcp.server import FastMCP
+from shared.error_handling import configure_error_handling
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 app = FastAPI(title="Marketplace Server", description="API for managing marketplace components and installations.")
+
+# Configure error handling
+configure_error_handling(app)
+
+mcp = FastMCP()
 
 class InstallationRequest(BaseModel):
     component_name: str
@@ -18,13 +26,15 @@ class VerificationRequest(BaseModel):
     component_name: str
     version: str
     checksum: str
+    installation_path: str
 
 class UpdateRequest(BaseModel):
     component_name: str
     current_version: str
     new_version: str
+    installation_path: str
 
-@app.post("/install", summary="Install a marketplace component")
+@mcp.tool()
 async def install_component(request: InstallationRequest):
     logging.info(f"Received installation request for {request.component_name} v{request.version} at {request.installation_path}")
     # Here, you would implement the actual installation logic.
@@ -51,7 +61,7 @@ async def install_component(request: InstallationRequest):
         logging.error(f"Installation failed for {request.component_name}: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Installation failed: {e}")
 
-@app.post("/verify", summary="Verify a marketplace component")
+@mcp.tool()
 async def verify_component(request: VerificationRequest):
     logging.info(f"Received verification request for {request.component_name} v{request.version}")
     # Here, you would implement the verification logic.
@@ -72,7 +82,7 @@ async def verify_component(request: VerificationRequest):
         logging.warning(f"Verification failed: Component {request.component_name} v{request.version} not found or invalid.")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Component {request.component_name} v{request.version} not found or invalid.")
 
-@app.post("/update", summary="Update a marketplace component")
+@mcp.tool()
 async def update_component(request: UpdateRequest):
     logging.info(f"Received update request for {request.component_name} from v{request.current_version} to v{request.new_version}")
     # Here, you would implement the update logic.
@@ -99,6 +109,8 @@ async def update_component(request: UpdateRequest):
     except Exception as e:
         logging.error(f"Update failed for {request.component_name}: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Update failed: {e}")
+
+
 
 if __name__ == "__main__":
     # This is for local testing. In a real deployment, you'd run this via uvicorn directly.

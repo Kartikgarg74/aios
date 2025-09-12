@@ -28,6 +28,7 @@ The project comprises several key services, each with distinct features:
 *   **IDE Integration Server (Port 8004)**: Facilitates integration with Integrated Development Environments, likely for code analysis, project management, or development workflows.
 *   **GitHub Actions Server (Port 8005)**: Interacts with GitHub, enabling automation of tasks, repository management, or CI/CD pipeline integration.
 *   **Voice/UI Server (Port 8006)**: Manages voice-based interactions and user interface elements, potentially for voice commands, text-to-speech, or speech-to-text functionalities.
+*   **Marketplace Server (Port 8007)**: Manages the installation, verification, and updating of various components and tools within the AIOS ecosystem.
 *   **Orchestrator (Port 9000)**: The central component that coordinates and manages interactions between all other MCP servers.
 *   **Frontend (Port 3000)**: A React-based web application that provides a user interface to interact with the various backend services.
 
@@ -129,8 +130,26 @@ All services expose a `/health` endpoint for health checks. The primary API endp
 *   **IDE Integration Server**: `http://localhost:8004`
 *   **GitHub Actions Server**: `http://localhost:8005`
 *   **Voice/UI Server**: `http://localhost:8006`
+*   **Marketplace Server**: `http://localhost:8007`
 *   **Orchestrator**: `http://localhost:9000`
 *   **Frontend**: `http://localhost:3000`
+
+## Development and Maintenance Tools
+
+To assist with development and maintenance tasks, a `dev_tools.py` script is available in the `scripts` directory. This script can be used for various cleanup and utility operations.
+
+### Running Development Tools
+
+To run the development tools, navigate to the project root directory and execute the following command:
+
+```bash
+python scripts/dev_tools.py
+```
+
+Currently, this script includes functionality to:
+
+*   Clean up `__pycache__` directories.
+*   Remove `.pyc` and `.tmp` files.
 
 ## 5. Troubleshooting
 

@@ -17,6 +17,7 @@ from pydantic import BaseModel
 import requests
 
 from logging_config import setup_logger, ServiceMonitor
+from shared.error_handling import configure_error_handling
 
 # Configure logging
 logger = setup_logger("github_actions_server")
@@ -34,6 +35,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+configure_error_handling(app)
 
 class GitHubConfig(BaseModel):
     token: str

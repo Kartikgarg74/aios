@@ -1,6 +1,6 @@
-import React from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { invoke } from '@tauri-apps/api/tauri';
+import React, { useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { githubApi } from '../services/api';
 import { GitPullRequest, Github, Star, Code } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -26,34 +26,47 @@ type PullRequest = {
 };
 
 const GitHubIntegration: React.FC = () => {
-  const [repoUrl, setRepoUrl] = React.useState('');
-  const [localPath, setLocalPath] = React.useState('');
-  const [selectedRepo, setSelectedRepo] = React.useState<string | null>(null);
+  const [repoUrl, setRepoUrl] = useState('');
+  const [localPath, setLocalPath] = useState('');
+  const [selectedRepo, setSelectedRepo] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
   const { data: repositories } = useQuery({
     queryKey: ['github-repos'],
-    queryFn: () => invoke<Repository[]>('list_github_repositories')
+    queryFn: () => githubApi.get<Repository[]>('/repositories'),
+    select: (response) => response.data
   });
 
   const { data: pullRequests } = useQuery({
     queryKey: ['github-prs', selectedRepo],
-    queryFn: () => invoke<PullRequest[]>('list_pull_requests', { repo: selectedRepo }),
+    queryFn: () => githubApi.get<PullRequest[]>(`/repositories/${selectedRepo}/pulls`),
+    select: (response) => response.data,
     enabled: !!selectedRepo
   });
+  
+  const cloneRepoMutation = useMutation({
+    mutationFn: (data: { url: string, localPath: string }) => 
+      githubApi.post('/repositories/clone', data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['github-repos'] });
+    }
+  });
 
-  const cloneRepository = async () => {
+  const cloneRepository = () => {
     if (!repoUrl.trim() || !localPath.trim()) return;
     
-    try {
-      await invoke('clone_repository', {
-        url: repoUrl,
-        localPath
-      });
-      setRepoUrl('');
-      setLocalPath('');
-    } catch (error) {
-      console.error('Error cloning repository:', error);
-    }
+    cloneRepoMutation.mutate({
+      url: repoUrl,
+      localPath
+    }, {
+      onSuccess: () => {
+        setRepoUrl('');
+        setLocalPath('');
+      },
+      onError: (error) => {
+        console.error('Error cloning repository:', error);
+      }
+    });
   };
 
   return (

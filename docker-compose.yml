@@ -1,7 +1,7 @@
 services:
   # Redis for message queuing
   redis:
-    image: redis:7-alpine
+    image: redis:latest
     ports:
       - "6379:6379"
     volumes:
@@ -10,9 +10,9 @@ services:
       - mcp_network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # Python MCP Server (Port 8000)
   python-server:
@@ -109,15 +109,14 @@ services:
       timeout: 10s
       retries: 3
 
-  # IDE Integration Server (Port 8004)
-  ide-server:
+  marketplace-server:
     build:
       context: .
-      dockerfile: Dockerfile.ide
+      dockerfile: Dockerfile.marketplace
     ports:
-      - "8004:8004"
+      - "8001:8001"
     environment:
-      - PORT=8004
+      - PORT=8001
       - REDIS_URL=redis://redis:6379
     depends_on:
       - redis
@@ -126,12 +125,36 @@ services:
     volumes:
       - ./servers:/app/servers
       - ./shared:/app/shared
-      - ./workspace:/workspace
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+
+  ide-integration-server:
+        build:
+            context: .
+            dockerfile: Dockerfile.ide
+        ports:
+            - "8004:8004"
+        volumes:
+            - .:/app
+        depends_on:
+            - redis
+        healthcheck:
+            test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+            interval: 30s
+            timeout: 10s
+            retries: 3
+
+  web-dashboard:
+    build:
+      context: ./frontend/web
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    networks:
+      - mcp_network
 
   # GitHub Actions Server (Port 8005)
   github-server:
@@ -198,9 +221,10 @@ services:
       - browser-server
       - system-ops-server
       - communication-server
-      - ide-server
+      - ide-integration-server
       - github-server
       - voice-ui-server
+      - marketplace-server
     networks:
       - mcp_network
     volumes:
@@ -225,7 +249,7 @@ services:
       - REACT_APP_BROWSER_SERVER_URL=http://browser-server:8001
       - REACT_APP_SYSTEM_SERVER_URL=http://system-ops-server:8002
       - REACT_APP_COMMUNICATION_SERVER_URL=http://communication-server:8003
-      - REACT_APP_IDE_SERVER_URL=http://ide-server:8004
+      - REACT_APP_IDE_SERVER_URL=http://ide-integration-server:8004
       - REACT_APP_GITHUB_SERVER_URL=http://github-server:8005
       - REACT_APP_VOICE_UI_SERVER_URL=http://voice-ui-server:8006
     depends_on:
