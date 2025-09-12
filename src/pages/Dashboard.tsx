@@ -34,52 +34,67 @@ const Dashboard: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   
   // Get global app context for error handling
-  const { error, clearError, refreshSystemStatus } = useAppContext();
-  const { systemStatus } = useContext(AppContext);
+  const { error, clearError, refreshSystemStatus, systemStatus } = useAppContext();
 
-  const { data: activeQueries, isLoading: queriesLoading, refetch: refetchQueries } = useQuery({
+  const { data: activeQueries, isLoading: queriesLoading, refetch: refetchQueries, error: queriesError } = useQuery({
     queryKey: ['active-queries'],
     queryFn: () => mainApi.get<number>('/ai/active-queries'),
     select: (response) => response.data,
     refetchInterval: 5000,
-    retry: 2,
-    onError: (err) => {
-      console.error('Failed to fetch active queries:', err);
-    }
+    retry: 2
   });
+  
+  // Handle query errors
+  useEffect(() => {
+    if (queriesError) {
+      console.error('Failed to fetch active queries:', queriesError);
+    }
+  }, [queriesError]);
 
-  const { data: systemInfo, isLoading: systemInfoLoading, refetch: refetchSystemInfo } = useQuery({
+  const { data: systemInfo, isLoading: systemInfoLoading, refetch: refetchSystemInfo, error: systemInfoError } = useQuery({
     queryKey: ['system-info'],
     queryFn: () => systemApi.get<SystemInfo>('/info'),
     select: (response) => response.data,
     refetchInterval: 5000,
-    retry: 2,
-    onError: (err) => {
-      console.error('Failed to fetch system info:', err);
-    }
+    retry: 2
   });
+  
+  // Handle system info query errors
+  useEffect(() => {
+    if (systemInfoError) {
+      console.error('Failed to fetch system info:', systemInfoError);
+    }
+  }, [systemInfoError]);
 
-  const { data: mcpStatus, isLoading: mcpStatusLoading, refetch: refetchMcpStatus } = useQuery({
+  const { data: mcpStatus, isLoading: mcpStatusLoading, refetch: refetchMcpStatus, error: mcpStatusError } = useQuery({
     queryKey: ['mcp-status'],
     queryFn: () => mainApi.get<MCPServerStatus>('/health'),
     select: (response) => response.data,
     refetchInterval: 10000,
-    retry: 2,
-    onError: (err) => {
-      console.error('Failed to fetch MCP status:', err);
-    }
+    retry: 2
   });
+  
+  // Handle MCP status query errors
+  useEffect(() => {
+    if (mcpStatusError) {
+      console.error('Failed to fetch MCP status:', mcpStatusError);
+    }
+  }, [mcpStatusError]);
 
-  const { data: currentPerformanceData, isLoading: performanceLoading, refetch: refetchPerformance } = useQuery({
+  const { data: currentPerformanceData, isLoading: performanceLoading, refetch: refetchPerformance, error: performanceError } = useQuery({
     queryKey: ['performance-data'],
     queryFn: () => systemApi.get<{ cpu_usage: number; memory_usage: number }>('/performance'),
     select: (response) => response.data,
     refetchInterval: 1000,
-    retry: 2,
-    onError: (err) => {
-      console.error('Failed to fetch performance data:', err);
-    }
+    retry: 2
   });
+  
+  // Handle performance data query errors
+  useEffect(() => {
+    if (performanceError) {
+      console.error('Failed to fetch performance data:', performanceError);
+    }
+  }, [performanceError]);
 
   // Function to refresh all data
   const refreshAllData = () => {

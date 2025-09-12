@@ -113,10 +113,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Connect to WebSockets
   useEffect(() => {
+    // Create a system WebSocket instance
+    const systemWs = new WebSocketService('ws://localhost:8003/ws');
+    
     const connectWebSockets = async () => {
       try {
         await mainWebSocket.connect();
-        await systemWebSocket.connect();
+        await systemWs.connect();
         setIsConnected(true);
       } catch (err) {
         console.error('WebSocket connection error:', err);
@@ -136,7 +139,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     // Listen for system status updates
-    systemWebSocket.on('system_status', (data) => {
+    systemWs.on('system_status', (data) => {
       setSystemStatus((prev) => ({
         ...prev,
         ...data,
@@ -147,7 +150,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => {
       mainStatusListener();
       mainWebSocket.disconnect();
-      systemWebSocket.disconnect();
+      systemWs.disconnect();
     };
   }, []);
 

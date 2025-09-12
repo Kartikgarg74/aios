@@ -46,7 +46,7 @@ const AIChat: React.FC = () => {
         content: cmd.result?.message || JSON.stringify(cmd.result),
         sender: cmd.status === 'success' ? 'ai' : 'user' as 'user' | 'ai',
         timestamp: new Date(cmd.created_at || Date.now()),
-        status: cmd.status,
+        status: cmd.status === 'processing' ? 'pending' : cmd.status,
       }));
       setMessages(historyMessages);
       setIsLoading(false);
@@ -63,8 +63,7 @@ const AIChat: React.FC = () => {
       console.error('Failed to fetch command history');
       setIsLoading(false);
     }
-  }, [data, historyLoading, isLoading]
-  });
+  }, [data, historyLoading, isLoading]);
 
   // Send command mutation
   const sendCommandMutation = useMutation({
